@@ -24,6 +24,8 @@ class NativeAudioService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         NativeAudioRuntime.ensure(applicationContext)
+        // Don't addSession() here: connecting media3's notification controller makes Android Auto
+        // stop showing the app's now-playing card.
         setupNotificationManager()
     }
 
@@ -44,7 +46,7 @@ class NativeAudioService : MediaSessionService() {
     }
 
     private fun setupNotificationManager() {
-        val player = NativeAudioRuntime.mediaSessionPlayer() ?: return
+        val player = NativeAudioRuntime.notificationPlayer() ?: return
         val mediaSession = NativeAudioRuntime.mediaSession() ?: return
         if (notificationManager != null) return
 

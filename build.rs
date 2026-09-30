@@ -12,6 +12,8 @@ const COMMANDS: &[&str] = &[
     "seek_to",
     "set_rate",
     "set_skip_interval",
+    "set_shuffle",
+    "set_repeat_mode",
     "get_state",
     "get_progress_checkpoint",
     "clear_progress_checkpoint",

@@ -174,6 +174,38 @@ class NativeAudioPlugin: Plugin, NativeAudioEventEmitter {
     }
   }
 
+  @objc public func setShuffle(_ invoke: Invoke) {
+    Task { @MainActor in
+      do {
+        let args = try invoke.parseArgs(SetShuffleArgs.self)
+        guard let enabled = args.enabled else {
+          invoke.reject("enabled is required")
+          return
+        }
+
+        invoke.resolve(await runtime.setShuffle(enabled: enabled))
+      } catch {
+        invoke.reject(error.localizedDescription)
+      }
+    }
+  }
+
+  @objc public func setRepeatMode(_ invoke: Invoke) {
+    Task { @MainActor in
+      do {
+        let args = try invoke.parseArgs(SetRepeatModeArgs.self)
+        guard let mode = args.mode.flatMap(RepeatMode.init(rawValue:)) else {
+          invoke.reject("mode must be off, all or one")
+          return
+        }
+
+        invoke.resolve(await runtime.setRepeatMode(mode))
+      } catch {
+        invoke.reject(error.localizedDescription)
+      }
+    }
+  }
+
   @objc public func setSkipInterval(_ invoke: Invoke) {
     Task { @MainActor in
       do {

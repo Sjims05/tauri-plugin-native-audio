@@ -29,6 +29,11 @@ actor PlaybackRuntimeActor {
   private var queue: [QueueEntry] = []
   private var queueIndex = -1
   private var queueLoadRevision: Int64 = 0
+  /// Queue indices in play order: shuffled when shuffle is on, 0..<queue.count otherwise.
+  private var playOrder: [Int] = []
+  // Kept across dispose() so they only have to be set once.
+  private var shuffleEnabled = false
+  private var repeatMode = RepeatMode.off
 
   private var lastEmittedState: NativeAudioState?
   private var lastProgressTickEmitAt = Date.distantPast
@@ -79,12 +84,15 @@ actor PlaybackRuntimeActor {
 
     let previousQueue = queue
     let previousIndex = queueIndex
+    let previousOrder = playOrder
     queue = items
+    rebuildPlayOrder(first: startIndex)
     do {
       try await loadQueueEntry(at: startIndex, autoplay: false)
     } catch {
       queue = previousQueue
       queueIndex = previousIndex
+      playOrder = previousOrder
       updateTrackCommands()
       throw error
     }
@@ -99,16 +107,16 @@ actor PlaybackRuntimeActor {
     guard hasNextEntry else {
       return snapshot()
     }
-    try await loadQueueEntry(at: queueIndex + 1, autoplay: machine.desiredPlaying)
+    try await moveToNextEntry(autoplay: machine.desiredPlaying)
     return snapshot()
   }
 
   func previous() async throws -> NativeAudioState {
     // Like other music players: restart the current track unless playback is near its beginning.
-    if queueIndex <= 0 || snapshot().currentTime > previousRestartThresholdSeconds {
+    guard snapshot().currentTime <= previousRestartThresholdSeconds, let previousIndex = previousQueueIndex else {
       return await seekTo(position: 0.0)
     }
-    try await loadQueueEntry(at: queueIndex - 1, autoplay: machine.desiredPlaying)
+    try await loadQueueEntry(at: previousIndex, autoplay: machine.desiredPlaying)
     return snapshot()
   }
 
@@ -116,7 +124,29 @@ actor PlaybackRuntimeActor {
     guard queue.indices.contains(index) else {
       throw NativeAudioRuntimeError.indexOutOfRange
     }
+    // Picking a track while shuffled plays it, then shuffles the rest of the queue after it.
+    if shuffleEnabled {
+      rebuildPlayOrder(first: index)
+    }
     try await loadQueueEntry(at: index, autoplay: machine.desiredPlaying)
+    return snapshot()
+  }
+
+  func setShuffle(enabled: Bool) -> NativeAudioState {
+    // Turning shuffle on (again) always makes a fresh order that starts with the current track.
+    if enabled != shuffleEnabled {
+      shuffleEnabled = enabled
+      rebuildPlayOrder(first: queueIndex >= 0 ? queueIndex : nil)
+      updateTrackCommands()
+    }
+    emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: true, refreshArtwork: false)
+    return snapshot()
+  }
+
+  func setRepeatMode(_ mode: RepeatMode) -> NativeAudioState {
+    repeatMode = mode
+    updateTrackCommands()
+    emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: true, refreshArtwork: false)
     return snapshot()
   }
 
@@ -213,6 +243,7 @@ actor PlaybackRuntimeActor {
     machine.resetAll()
     queue = []
     queueIndex = -1
+    playOrder = []
     queueLoadRevision += 1
     wasPlayingBeforeInterruption = false
     lastEmittedState = nil
@@ -223,8 +254,61 @@ actor PlaybackRuntimeActor {
     emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: true, refreshArtwork: false)
   }
 
+  private var playOrderPosition: Int? {
+    playOrder.firstIndex(of: queueIndex)
+  }
+
+  /// Whether there is a track after the current one, including the wrap-around with repeat all.
+  /// Like ExoPlayer, repeat one doesn't block skipping to the next track.
   private var hasNextEntry: Bool {
-    queueIndex >= 0 && queueIndex + 1 < queue.count
+    guard let position = playOrderPosition else {
+      return false
+    }
+    return position + 1 < playOrder.count || repeatMode == .all
+  }
+
+  private var previousQueueIndex: Int? {
+    guard let position = playOrderPosition else {
+      return nil
+    }
+    if position > 0 {
+      return playOrder[position - 1]
+    }
+    return repeatMode == .all ? playOrder.last : nil
+  }
+
+  private func rebuildPlayOrder(first: Int?, recent: Set<Int> = []) {
+    guard shuffleEnabled else {
+      playOrder = Array(queue.indices)
+      return
+    }
+    let entries = queue
+    playOrder = ShuffleOrderBuilder.build(
+      count: entries.count,
+      first: first,
+      recent: recent,
+      artistOf: { entries[$0].metadata.artist }
+    )
+  }
+
+  /// Loads the track after the current one in play order. At the end of the order with repeat all,
+  /// it wraps to the start, and with shuffle on it first builds a new order for the next pass, so
+  /// passes don't repeat the same order.
+  private func moveToNextEntry(autoplay: Bool) async throws {
+    guard let position = playOrderPosition else {
+      return
+    }
+    if position + 1 < playOrder.count {
+      try await loadQueueEntry(at: playOrder[position + 1], autoplay: autoplay)
+      return
+    }
+    guard repeatMode == .all, !playOrder.isEmpty else {
+      return
+    }
+    if shuffleEnabled {
+      rebuildPlayOrder(first: nil, recent: ShuffleOrderBuilder.recentTail(playOrder))
+    }
+    try await loadQueueEntry(at: playOrder[0], autoplay: autoplay)
   }
 
   /// Swaps the player item to `queue[index]`. If a newer load starts while the source is being
@@ -386,10 +470,21 @@ actor PlaybackRuntimeActor {
       if machine.pendingSeek != nil {
         return
       }
+      if repeatMode == .one {
+        // Same path as pressing play after the end: seek to 0 and play.
+        machine.markEnded()
+        do {
+          _ = try await play()
+        } catch {
+          machine.markError(error.localizedDescription)
+          emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: true, refreshArtwork: false)
+        }
+        return
+      }
       if hasNextEntry {
         checkpointStore.persistIfNeeded(snapshot: snapshot(), storyId: machine.currentStoryId, force: true)
         do {
-          try await loadQueueEntry(at: queueIndex + 1, autoplay: true)
+          try await moveToNextEntry(autoplay: true)
         } catch {
           machine.markError(error.localizedDescription)
           emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: true, refreshArtwork: false)
@@ -506,7 +601,9 @@ actor PlaybackRuntimeActor {
       isActuallyPlaying: playerAdapter.isActuallyPlaying(),
       isBuffering: playerAdapter.isBuffering(),
       queueIndex: queueIndex,
-      queueLength: queue.count
+      queueLength: queue.count,
+      shuffle: shuffleEnabled,
+      repeatMode: repeatMode
     )
   }
 
@@ -570,6 +667,8 @@ actor PlaybackRuntimeActor {
       && lhs.queueIndex == rhs.queueIndex
       && lhs.queueLength == rhs.queueLength
       && lhs.currentId == rhs.currentId
+      && lhs.shuffle == rhs.shuffle
+      && lhs.repeatMode == rhs.repeatMode
       && lhs.error == rhs.error
   }
 

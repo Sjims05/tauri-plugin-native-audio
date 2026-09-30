@@ -14,6 +14,8 @@ permissions = [
   "allow-seek-to",
   "allow-set-rate",
   "allow-set-skip-interval",
+  "allow-set-shuffle",
+  "allow-set-repeat-mode",
   "allow-get-state",
   "allow-get-progress-checkpoint",
   "allow-clear-progress-checkpoint",

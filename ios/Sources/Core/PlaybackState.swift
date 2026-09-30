@@ -134,7 +134,9 @@ struct PlaybackStateMachine: Sendable {
     isActuallyPlaying: Bool,
     isBuffering: Bool,
     queueIndex: Int,
-    queueLength: Int
+    queueLength: Int,
+    shuffle: Bool,
+    repeatMode: RepeatMode
   ) -> NativeAudioState {
     let duration = (rawDuration.isFinite && rawDuration > 0) ? rawDuration : 0.0
     let baseCurrent = (rawCurrentTime.isFinite && rawCurrentTime >= 0) ? rawCurrentTime : 0.0
@@ -201,6 +203,8 @@ struct PlaybackStateMachine: Sendable {
       queueIndex: queueIndex,
       queueLength: queueLength,
       currentId: currentStoryId,
+      shuffle: shuffle,
+      repeatMode: repeatMode.rawValue,
       error: lastError
     )
   }

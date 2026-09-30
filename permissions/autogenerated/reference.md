@@ -17,6 +17,8 @@ Default permissions for the plugin
 - `allow-seek-to`
 - `allow-set-rate`
 - `allow-set-skip-interval`
+- `allow-set-shuffle`
+- `allow-set-repeat-mode`
 - `allow-get-state`
 - `allow-get-progress-checkpoint`
 - `allow-clear-progress-checkpoint`
@@ -391,6 +393,58 @@ Enables the set_rate command without any pre-configured scope.
 <td>
 
 Denies the set_rate command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:allow-set-repeat-mode`
+
+</td>
+<td>
+
+Enables the set_repeat_mode command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:deny-set-repeat-mode`
+
+</td>
+<td>
+
+Denies the set_repeat_mode command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:allow-set-shuffle`
+
+</td>
+<td>
+
+Enables the set_shuffle command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:deny-set-shuffle`
+
+</td>
+<td>
+
+Denies the set_shuffle command without any pre-configured scope.
 
 </td>
 </tr>

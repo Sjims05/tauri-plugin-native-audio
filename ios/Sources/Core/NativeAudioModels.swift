@@ -15,7 +15,15 @@ struct NativeAudioState: Encodable, Sendable {
   let queueIndex: Int
   let queueLength: Int
   let currentId: Int64?
+  let shuffle: Bool
+  let repeatMode: String
   let error: String?
+}
+
+enum RepeatMode: String, Sendable {
+  case off
+  case all
+  case one
 }
 
 struct NativeAudioProgressCheckpoint: Codable, Sendable {
@@ -41,6 +49,14 @@ struct SetQueueArgs: Decodable, Sendable {
 
 struct SkipToArgs: Decodable, Sendable {
   let index: Int?
+}
+
+struct SetShuffleArgs: Decodable, Sendable {
+  let enabled: Bool?
+}
+
+struct SetRepeatModeArgs: Decodable, Sendable {
+  let mode: String?
 }
 
 struct SetSkipIntervalArgs: Decodable, Sendable {

@@ -111,6 +111,8 @@ Add plugin permissions to your capability file (example: `src-tauri/capabilities
 - `allow-seek-to`
 - `allow-set-rate`
 - `allow-set-skip-interval`
+- `allow-set-shuffle`
+- `allow-set-repeat-mode`
 - `allow-get-state`
 - `allow-get-progress-checkpoint`
 - `allow-dispose`
@@ -150,6 +152,8 @@ Runtime behavior is configured from JS commands:
 - `setQueue({ items, startIndex?, startPosition? })`
 - `setRate(rate)`
 - `setSkipInterval(seconds)`
+- `setShuffle(enabled)`
+- `setRepeatMode(mode)`
 - `seekTo(positionSeconds)`
 
 ## Usage
@@ -220,20 +224,58 @@ await previous();  // restart the current track if more than 3s in, otherwise go
 await skipTo(2);   // jump to a specific index
 ```
 
-- The player advances to the next item automatically when a track ends; `status` becomes `ended` only after the last item.
+- The player advances to the next item automatically when a track ends; `status` becomes `ended` only after the last item
+  (unless repeat is on, see below).
 - `next` / `previous` / `skipTo` keep the current play/pause state.
 - `setSource` is equivalent to a queue with a single item.
 - Track changes are reported through `queueIndex`, `queueLength` and `currentId` in `NativeAudioState`.
 
+## Shuffle and repeat
+
+```ts
+import { setShuffle, setRepeatMode } from "tauri-plugin-native-audio-api";
+
+await setShuffle(true);
+await setRepeatMode("all"); // "off" (default) | "all" | "one"
+```
+
+Both are handled natively, so they keep working while the screen is locked. Both are off by default, can be
+set before or after `setQueue`, and are kept for the rest of the app session (also across `setQueue` and
+`dispose()`). The current values are reported as `shuffle` and `repeatMode` in `NativeAudioState`.
+
+Shuffle:
+
+- Plays the queue in a shuffled order. Every track plays once per pass, so a track you just heard can't come
+  back until the rest of the queue has played.
+- Turning shuffle on makes a new order that starts with the current track, so the whole rest of the queue follows.
+  Turning it off continues from the current track in queue order.
+- `setQueue` with shuffle on starts with `startIndex` and shuffles the rest after it. Pass a random `startIndex`
+  to also start on a random track.
+- `skipTo(index)` with shuffle on plays that track and shuffles the rest of the queue after it.
+- Where possible, two tracks by the same `artist` don't play back to back.
+- `queueIndex` / `currentId` always refer to the position in `items`, not the shuffled position.
+
+Repeat:
+
+- `off`: playback stops after the last track (`status` becomes `ended`).
+- `all`: after the last track, the queue starts over. With shuffle on, every pass gets a new order, and the tracks
+  from the end of the previous pass (the last ~20% of the queue) are kept out of the start of the next one.
+  `next()` / `previous()` also wrap around between the last and first track.
+- `one`: the current track repeats when it ends. `next()` / `previous()` and the next / previous buttons still
+  change track.
+
 ## Previous / next buttons
 
-`setSkipInterval(seconds)` sets what the previous / next buttons in the Android notification, the iOS lock screen
-and Control Center, and headset / Bluetooth controls do:
+`setSkipInterval(seconds)` sets what the previous / next buttons in the Android notification and lock screen,
+the iOS lock screen and Control Center, and headset / Bluetooth controls do:
 
 - `0` (the default): skip whole tracks in the queue, like `previous()` / `next()`. You don't need to call
   `setSkipInterval` for this.
-- Above `0`: seek back / forward by that many seconds within the current track. On iOS the lock screen shows
-  skip-interval buttons (for example "15") instead of track buttons.
+- Above `0`: seek back / forward by that many seconds within the current track. On Android the buttons keep
+  their previous / next icons. On iOS the lock screen shows skip-interval buttons instead (for example "15").
+
+Android Auto: this plugin doesn't add Android Auto support, so Auto shows the app in its generic player. That
+player always draws its own ±10 second buttons, whatever `setSkipInterval` is set to.
 
 ```ts
 import { setSkipInterval } from "tauri-plugin-native-audio-api";
@@ -262,8 +304,12 @@ export type NativeAudioState = {
   queueIndex: number; // -1 when nothing is loaded
   queueLength: number;
   currentId?: number; // `id` of the current item, when one was given
+  shuffle: boolean;
+  repeatMode: NativeAudioRepeatMode;
   error?: string;
 };
+
+export type NativeAudioRepeatMode = "off" | "all" | "one";
 
 export type NativeAudioSetSourcePayload = {
   src: string;
@@ -302,6 +348,8 @@ Commands:
 - `seekTo(position: number): Promise<NativeAudioState>`
 - `setRate(rate: number): Promise<NativeAudioState>`
 - `setSkipInterval(seconds: number): Promise<NativeAudioState>`
+- `setShuffle(enabled: boolean): Promise<NativeAudioState>`
+- `setRepeatMode(mode: NativeAudioRepeatMode): Promise<NativeAudioState>`
 - `getState(): Promise<NativeAudioState>`
 - `getProgressCheckpoint(): Promise<NativeAudioProgressCheckpoint | null>`
 - `dispose(): Promise<void>`
@@ -315,6 +363,8 @@ Validation and errors:
 - `seekTo` rejects if `position` is missing/non-finite.
 - `setRate` rejects if `rate <= 0` or non-finite.
 - `setSkipInterval` rejects if `seconds < 0` or non-finite.
+- `setShuffle` rejects if `enabled` is missing.
+- `setRepeatMode` rejects if `mode` is not `off`, `all` or `one`.
 - Native failures can also be reflected in `NativeAudioState.error` with status `error`.
 
 State semantics:
@@ -322,7 +372,7 @@ State semantics:
 - `idle`: player idle or paused
 - `loading`: buffering
 - `playing`: active playback
-- `ended`: reached media end
+- `ended`: reached the end of the last track (never with repeat `all` / `one`)
 - `error`: runtime/player error
 
 ## Native Progress Checkpoint (mobile)
@@ -404,7 +454,7 @@ iOS app closes right after launch on iOS 14:
 
 iOS playback runs through a single actor-owned runtime.
 
-- Playback commands (`setSource`, `setQueue`, `next`, `previous`, `skipTo`, `play`, `pause`, `seekTo`, `setRate`, `setSkipInterval`) are serialized in one state owner.
+- Playback commands (`setSource`, `setQueue`, `next`, `previous`, `skipTo`, `play`, `pause`, `seekTo`, `setRate`, `setSkipInterval`, `setShuffle`, `setRepeatMode`) are serialized in one state owner.
 - `setSource` and `seekTo` use revision fencing (`sourceRevision`, `seekRevision`) to ignore stale async callbacks.
 - Seek is processed as a deterministic two-phase flow (`pending -> committed`).
 - Native state is emitted through `native_audio_state` with the `NativeAudioState` payload.

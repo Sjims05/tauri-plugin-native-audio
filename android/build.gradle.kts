@@ -38,4 +38,5 @@ dependencies {
     implementation("androidx.media3:media3-session:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
     implementation(project(":tauri-android"))
+    testImplementation("junit:junit:4.13.2")
 }

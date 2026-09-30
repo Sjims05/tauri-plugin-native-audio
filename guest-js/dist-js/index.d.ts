@@ -12,8 +12,13 @@ export type NativeAudioState = {
   queueLength: number;
   /** `id` of the current item, when one was given. */
   currentId?: number;
+  shuffle: boolean;
+  repeatMode: NativeAudioRepeatMode;
   error?: string;
 };
+
+/** `off`: stop after the last track. `all`: loop the whole queue. `one`: loop the current track. */
+export type NativeAudioRepeatMode = 'off' | 'all' | 'one';
 
 export type NativeAudioSetSourcePayload = {
   src: string;
@@ -55,6 +60,12 @@ export declare const setRate: (rate: number) => Promise<NativeAudioState>;
  * `0` (the default) skips whole tracks in the queue; above `0` seeks back / forward by that many seconds.
  */
 export declare const setSkipInterval: (seconds: number) => Promise<NativeAudioState>;
+/**
+ * Plays the queue in a shuffled order that starts with the current track. Every track plays once
+ * per pass, and with repeat `all` each pass gets a new order. `queueIndex` stays the index in `items`.
+ */
+export declare const setShuffle: (enabled: boolean) => Promise<NativeAudioState>;
+export declare const setRepeatMode: (mode: NativeAudioRepeatMode) => Promise<NativeAudioState>;
 export declare const getState: () => Promise<NativeAudioState>;
 export declare const getProgressCheckpoint: () => Promise<NativeAudioProgressCheckpoint | null>;
 export declare const clearProgressCheckpoint: () => Promise<void>;

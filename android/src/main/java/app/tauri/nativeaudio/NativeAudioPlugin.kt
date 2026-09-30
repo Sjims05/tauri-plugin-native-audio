@@ -18,13 +18,12 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
-import androidx.media3.common.FlagSet
-import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.ShuffleOrder.DefaultShuffleOrder
 import androidx.media3.session.MediaSession
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
@@ -32,9 +31,8 @@ import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
-import java.util.concurrent.CopyOnWriteArraySet
 import kotlin.math.max
-import kotlin.math.min
+import kotlin.random.Random
 
 private const val TAG = "plugin/native-audio"
 private const val EVENT_STATE = "native_audio_state"
@@ -61,6 +59,8 @@ data class NativeAudioState(
     val queueIndex: Int,
     val queueLength: Int,
     val currentId: Long? = null,
+    val shuffle: Boolean,
+    val repeatMode: String,
     val error: String? = null,
 )
 
@@ -93,6 +93,16 @@ class SkipToArgs {
 }
 
 @InvokeArg
+class SetShuffleArgs {
+    var enabled: Boolean? = null
+}
+
+@InvokeArg
+class SetRepeatModeArgs {
+    var mode: String? = null
+}
+
+@InvokeArg
 class SetSkipIntervalArgs {
     var seconds: Double? = null
 }
@@ -105,80 +115,6 @@ class SeekToArgs {
 @InvokeArg
 class SetRateArgs {
     var rate: Double? = null
-}
-
-/**
- * The player handed to the media session and notification. With a skip interval of 0 the
- * previous / next buttons move through the queue; above 0 they seek by that interval instead.
- */
-private class SkipIntervalPlayer(private val exoPlayer: ExoPlayer) : ForwardingPlayer(exoPlayer) {
-    @Volatile
-    var skipIntervalMs = 0L
-
-    private val listeners = CopyOnWriteArraySet<Player.Listener>()
-
-    override fun addListener(listener: Player.Listener) {
-        super.addListener(listener)
-        listeners.add(listener)
-    }
-
-    override fun removeListener(listener: Player.Listener) {
-        super.removeListener(listener)
-        listeners.remove(listener)
-    }
-
-    override fun getAvailableCommands(): Player.Commands {
-        val commands = super.getAvailableCommands()
-        if (skipIntervalMs <= 0L) return commands
-        return commands.buildUpon().addAll(*NAVIGATION_COMMANDS).build()
-    }
-
-    override fun isCommandAvailable(command: Int): Boolean {
-        if (skipIntervalMs > 0L && command in NAVIGATION_COMMANDS) return true
-        return super.isCommandAvailable(command)
-    }
-
-    override fun seekToPrevious() {
-        if (skipIntervalMs > 0L) seekBy(-skipIntervalMs) else super.seekToPrevious()
-    }
-
-    override fun seekToPreviousMediaItem() {
-        if (skipIntervalMs > 0L) seekBy(-skipIntervalMs) else super.seekToPreviousMediaItem()
-    }
-
-    override fun seekToNext() {
-        if (skipIntervalMs > 0L) seekBy(skipIntervalMs) else super.seekToNext()
-    }
-
-    override fun seekToNextMediaItem() {
-        if (skipIntervalMs > 0L) seekBy(skipIntervalMs) else super.seekToNextMediaItem()
-    }
-
-    /** Tells the session and notification to re-read the available commands. Main thread only. */
-    fun notifyAvailableCommandsChanged() {
-        val commands = availableCommands
-        val events = Player.Events(FlagSet.Builder().add(Player.EVENT_AVAILABLE_COMMANDS_CHANGED).build())
-        for (listener in listeners) {
-            listener.onAvailableCommandsChanged(commands)
-            listener.onEvents(this, events)
-        }
-    }
-
-    private fun seekBy(deltaMs: Long) {
-        var target = max(0L, exoPlayer.currentPosition + deltaMs)
-        val duration = exoPlayer.duration
-        if (duration != C.TIME_UNSET) target = min(target, duration)
-        exoPlayer.seekTo(target)
-    }
-
-    private companion object {
-        val NAVIGATION_COMMANDS = intArrayOf(
-            Player.COMMAND_SEEK_TO_PREVIOUS,
-            Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
-            Player.COMMAND_SEEK_TO_NEXT,
-            Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
-        )
-    }
 }
 
 private data class PendingSeekState(
@@ -195,8 +131,14 @@ object NativeAudioRuntime {
     private var appContext: Context? = null
     private var mediaSession: MediaSession? = null
     private var sessionPlayer: SkipIntervalPlayer? = null
-    // Kept across dispose() so it only has to be set once.
+    // Kept across dispose() so they only have to be set once.
+    @Volatile
     private var skipIntervalMs = 0L
+    private var shuffleEnabled = false
+    private var repeatMode = Player.REPEAT_MODE_OFF
+    // The shuffle order handed to ExoPlayer, kept to detect the wrap to a new pass.
+    private var shuffleIndices = IntArray(0)
+    private var lastMediaItemIndex = C.INDEX_UNSET
     private var lastError: String? = null
     private var pendingSeekState: PendingSeekState? = null
     private var lastProgressPersistedAtMs = 0L
@@ -239,8 +181,26 @@ object NativeAudioRuntime {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             synchronized(lock) {
                 pendingSeekState = null
+                player?.let { reshuffleOnWrapLocked(it, reason) }
             }
             syncTicking()
+            emitState()
+        }
+
+        override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+            synchronized(lock) {
+                shuffleEnabled = shuffleModeEnabled
+                // Every time shuffle is turned on: a fresh order that starts with the current track.
+                val exoPlayer = player
+                if (shuffleModeEnabled && exoPlayer != null) applyShuffleOrderLocked(exoPlayer, exoPlayer.currentMediaItemIndex)
+            }
+            emitState()
+        }
+
+        override fun onRepeatModeChanged(repeatMode: Int) {
+            synchronized(lock) {
+                this@NativeAudioRuntime.repeatMode = repeatMode
+            }
             emitState()
         }
 
@@ -299,6 +259,8 @@ object NativeAudioRuntime {
             exoPlayer.setAudioAttributes(audioAttributes, true)
             exoPlayer.setHandleAudioBecomingNoisy(true)
             exoPlayer.setWakeMode(C.WAKE_MODE_LOCAL)
+            exoPlayer.repeatMode = repeatMode
+            exoPlayer.shuffleModeEnabled = shuffleEnabled
             exoPlayer.addListener(playerListener)
             player = exoPlayer
             val launchIntent = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
@@ -310,7 +272,7 @@ object NativeAudioRuntime {
 
             // Notification / headset / lock screen previous & next buttons go through this player,
             // which either moves through the queue or seeks by the skip interval.
-            val skipPlayer = SkipIntervalPlayer(exoPlayer).also { it.skipIntervalMs = skipIntervalMs }
+            val skipPlayer = SkipIntervalPlayer(exoPlayer, skipIntervalMs = { skipIntervalMs })
             sessionPlayer = skipPlayer
             mediaSession = MediaSession.Builder(ctx, skipPlayer)
                 .apply {
@@ -354,7 +316,9 @@ object NativeAudioRuntime {
             val mediaItem = buildMediaItem(src, storyId, title, artist, artworkUrl)
 
             pendingSeekState = null
+            lastMediaItemIndex = 0
             exoPlayer.setMediaItem(mediaItem)
+            if (exoPlayer.shuffleModeEnabled) applyShuffleOrderLocked(exoPlayer, 0)
             exoPlayer.prepare()
             lastError = null
             syncTickingLocked()
@@ -372,7 +336,10 @@ object NativeAudioRuntime {
             val safeStartMs = if (startPositionSec.isFinite()) max(0L, (startPositionSec * 1000.0).toLong()) else 0L
 
             pendingSeekState = null
+            lastMediaItemIndex = safeIndex
             exoPlayer.setMediaItems(mediaItems, safeIndex, safeStartMs)
+            // ExoPlayer gives a new playlist a random order; start ours with the start item instead.
+            if (exoPlayer.shuffleModeEnabled) applyShuffleOrderLocked(exoPlayer, safeIndex)
             exoPlayer.prepare()
             lastError = null
             syncTickingLocked()
@@ -415,6 +382,9 @@ object NativeAudioRuntime {
             if (index < 0 || index >= exoPlayer.mediaItemCount) return false
             pendingSeekState = null
             lastError = null
+            // Picking a track while shuffled plays it, then shuffles the rest of the queue after it.
+            if (exoPlayer.shuffleModeEnabled) applyShuffleOrderLocked(exoPlayer, index)
+            lastMediaItemIndex = index
             exoPlayer.seekToDefaultPosition(index)
             exoPlayer.prepare()
         }
@@ -473,11 +443,30 @@ object NativeAudioRuntime {
         emitState()
     }
 
+    fun setShuffle(context: Context, enabled: Boolean) {
+        synchronized(lock) {
+            ensure(context)
+            shuffleEnabled = enabled
+            // The order itself is built in onShuffleModeEnabledChanged.
+            player?.shuffleModeEnabled = enabled
+        }
+        emitState()
+    }
+
+    fun setRepeatMode(context: Context, mode: Int) {
+        synchronized(lock) {
+            ensure(context)
+            repeatMode = mode
+            player?.repeatMode = mode
+        }
+        emitState()
+    }
+
     fun setSkipInterval(seconds: Double) {
         if (!seconds.isFinite() || seconds < 0.0) return
         val skipPlayer = synchronized(lock) {
             skipIntervalMs = (seconds * 1000.0).toLong()
-            sessionPlayer?.also { it.skipIntervalMs = skipIntervalMs }
+            sessionPlayer
         } ?: return
         tickHandler.post { skipPlayer.notifyAvailableCommandsChanged() }
     }
@@ -547,7 +536,8 @@ object NativeAudioRuntime {
         }
     }
 
-    fun mediaSessionPlayer(): Player? {
+    /** The player the notification (PlayerNotificationManager) shows controls for. */
+    fun notificationPlayer(): Player? {
         synchronized(lock) {
             return sessionPlayer ?: player
         }
@@ -599,6 +589,45 @@ object NativeAudioRuntime {
 
     private fun progressPrefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PROGRESS_PREFS_NAME, Context.MODE_PRIVATE)
+
+    private fun applyShuffleOrderLocked(exoPlayer: ExoPlayer, first: Int?, recent: Set<Int> = emptySet()) {
+        val count = exoPlayer.mediaItemCount
+        val order = ShuffleOrderBuilder.build(
+            count = count,
+            first = first?.takeIf { it in 0 until count },
+            recent = recent,
+            artistOf = { exoPlayer.getMediaItemAt(it).mediaMetadata.artist?.toString() },
+        )
+        shuffleIndices = order
+        exoPlayer.setShuffleOrder(DefaultShuffleOrder(order, Random.nextLong()))
+    }
+
+    /**
+     * With shuffle + repeat all, ExoPlayer would replay the same order on every pass. When playback
+     * wraps from the last track of the order to the first, build a new order for the next pass.
+     */
+    private fun reshuffleOnWrapLocked(exoPlayer: ExoPlayer, reason: Int) {
+        val previousIndex = lastMediaItemIndex
+        val currentIndex = exoPlayer.currentMediaItemIndex
+        lastMediaItemIndex = currentIndex
+
+        if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT ||
+            reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED
+        ) return
+        if (!exoPlayer.shuffleModeEnabled || exoPlayer.repeatMode != Player.REPEAT_MODE_ALL) return
+        val order = shuffleIndices
+        if (order.size < 2 || order.size != exoPlayer.mediaItemCount) return
+        if (previousIndex != order.last() || currentIndex != order.first()) return
+
+        // The current track opened the old pass, so it's the least recently played one.
+        applyShuffleOrderLocked(exoPlayer, currentIndex, ShuffleOrderBuilder.recentTail(order))
+    }
+
+    private fun repeatModeName(mode: Int): String = when (mode) {
+        Player.REPEAT_MODE_ONE -> "one"
+        Player.REPEAT_MODE_ALL -> "all"
+        else -> "off"
+    }
 
     private fun currentStoryIdLocked(): Long? =
         player?.currentMediaItem?.mediaId?.toLongOrNull()?.takeIf { it > 0 }
@@ -656,6 +685,8 @@ object NativeAudioRuntime {
                 queueIndex = -1,
                 queueLength = 0,
                 currentId = null,
+                shuffle = shuffleEnabled,
+                repeatMode = repeatModeName(repeatMode),
                 error = null,
             )
 
@@ -691,6 +722,8 @@ object NativeAudioRuntime {
             queueIndex = if (exoPlayer.mediaItemCount > 0) exoPlayer.currentMediaItemIndex else -1,
             queueLength = exoPlayer.mediaItemCount,
             currentId = exoPlayer.currentMediaItem?.mediaId?.toLongOrNull(),
+            shuffle = exoPlayer.shuffleModeEnabled,
+            repeatMode = repeatModeName(exoPlayer.repeatMode),
             error = lastError,
         )
     }
@@ -882,6 +915,44 @@ class NativeAudioPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     @Command
+    fun setShuffle(invoke: Invoke) {
+        val enabled = invoke.parseArgs(SetShuffleArgs::class.java).enabled
+        if (enabled == null) {
+            invoke.reject("enabled is required")
+            return
+        }
+
+        runCatching {
+            NativeAudioRuntime.setShuffle(activity.applicationContext, enabled)
+        }.onSuccess {
+            invoke.resolve(toJsObject(NativeAudioRuntime.getState(activity.applicationContext)))
+        }.onFailure {
+            invoke.reject(it.message ?: "setShuffle failed")
+        }
+    }
+
+    @Command
+    fun setRepeatMode(invoke: Invoke) {
+        val mode = when (invoke.parseArgs(SetRepeatModeArgs::class.java).mode) {
+            "off" -> Player.REPEAT_MODE_OFF
+            "all" -> Player.REPEAT_MODE_ALL
+            "one" -> Player.REPEAT_MODE_ONE
+            else -> {
+                invoke.reject("mode must be off, all or one")
+                return
+            }
+        }
+
+        runCatching {
+            NativeAudioRuntime.setRepeatMode(activity.applicationContext, mode)
+        }.onSuccess {
+            invoke.resolve(toJsObject(NativeAudioRuntime.getState(activity.applicationContext)))
+        }.onFailure {
+            invoke.reject(it.message ?: "setRepeatMode failed")
+        }
+    }
+
+    @Command
     fun setSkipInterval(invoke: Invoke) {
         val seconds = invoke.parseArgs(SetSkipIntervalArgs::class.java).seconds
         if (seconds == null || !seconds.isFinite() || seconds < 0) {
@@ -975,6 +1046,8 @@ class NativeAudioPlugin(private val activity: Activity) : Plugin(activity) {
         payload.put("queueIndex", state.queueIndex)
         payload.put("queueLength", state.queueLength)
         state.currentId?.let { payload.put("currentId", it) }
+        payload.put("shuffle", state.shuffle)
+        payload.put("repeatMode", state.repeatMode)
         if (!state.error.isNullOrBlank()) payload.put("error", state.error)
         return payload
     }
