@@ -7,6 +7,11 @@ export type NativeAudioState = {
   isPlaying: boolean;
   buffering: boolean;
   rate: number;
+  /** Index of the current item in the queue, or -1 when nothing is loaded. */
+  queueIndex: number;
+  queueLength: number;
+  /** `id` of the current item, when one was given. */
+  currentId?: number;
   error?: string;
 };
 
@@ -18,6 +23,16 @@ export type NativeAudioSetSourcePayload = {
   artworkUrl?: string;
 };
 
+export type NativeAudioQueueItem = NativeAudioSetSourcePayload;
+
+export type NativeAudioSetQueuePayload = {
+  items: NativeAudioQueueItem[];
+  /** Defaults to 0. */
+  startIndex?: number;
+  /** Seconds into the start item. Defaults to 0. */
+  startPosition?: number;
+};
+
 export type NativeAudioProgressCheckpoint = {
   id: number;
   currentTime: number;
@@ -27,10 +42,19 @@ export type NativeAudioProgressCheckpoint = {
 
 export declare const initialize: () => Promise<NativeAudioState>;
 export declare const setSource: (payload: NativeAudioSetSourcePayload) => Promise<NativeAudioState>;
+export declare const setQueue: (payload: NativeAudioSetQueuePayload) => Promise<NativeAudioState>;
+export declare const next: () => Promise<NativeAudioState>;
+export declare const previous: () => Promise<NativeAudioState>;
+export declare const skipTo: (index: number) => Promise<NativeAudioState>;
 export declare const play: () => Promise<NativeAudioState>;
 export declare const pause: () => Promise<NativeAudioState>;
 export declare const seekTo: (position: number) => Promise<NativeAudioState>;
 export declare const setRate: (rate: number) => Promise<NativeAudioState>;
+/**
+ * What the previous / next buttons in the notification, lock screen and headset do.
+ * `0` (the default) skips whole tracks in the queue; above `0` seeks back / forward by that many seconds.
+ */
+export declare const setSkipInterval: (seconds: number) => Promise<NativeAudioState>;
 export declare const getState: () => Promise<NativeAudioState>;
 export declare const getProgressCheckpoint: () => Promise<NativeAudioProgressCheckpoint | null>;
 export declare const clearProgressCheckpoint: () => Promise<void>;

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-set-skip-interval"
+description = "Enables the set_skip_interval command without any pre-configured scope."
+commands.allow = ["set_skip_interval"]
+
+[[permission]]
+identifier = "deny-set-skip-interval"
+description = "Denies the set_skip_interval command without any pre-configured scope."
+commands.deny = ["set_skip_interval"]

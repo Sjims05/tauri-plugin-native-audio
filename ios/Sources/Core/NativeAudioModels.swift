@@ -1,7 +1,8 @@
 import Foundation
 
 let nativeAudioStateEvent = "native_audio_state"
-let remoteSeekStepSeconds = 10.0
+/// `previous` restarts the current track instead of going back when playback is past this point.
+let previousRestartThresholdSeconds = 3.0
 let checkpointDefaultsKeyV1 = "tauri_native_audio_progress_checkpoint_v1"
 
 struct NativeAudioState: Encodable, Sendable {
@@ -11,6 +12,9 @@ struct NativeAudioState: Encodable, Sendable {
   let isPlaying: Bool
   let buffering: Bool
   let rate: Double
+  let queueIndex: Int
+  let queueLength: Int
+  let currentId: Int64?
   let error: String?
 }
 
@@ -29,6 +33,20 @@ struct SetSourceArgs: Decodable, Sendable {
   let artworkUrl: String?
 }
 
+struct SetQueueArgs: Decodable, Sendable {
+  let items: [SetSourceArgs]
+  let startIndex: Int?
+  let startPosition: Double?
+}
+
+struct SkipToArgs: Decodable, Sendable {
+  let index: Int?
+}
+
+struct SetSkipIntervalArgs: Decodable, Sendable {
+  let seconds: Double?
+}
+
 struct SeekToArgs: Decodable, Sendable {
   let position: Double?
 }
@@ -40,6 +58,9 @@ struct SetRateArgs: Decodable, Sendable {
 enum NativeAudioRuntimeError: LocalizedError {
   case invalidSource
   case invalidRate
+  case invalidSkipInterval
+  case emptyQueue
+  case indexOutOfRange
 
   var errorDescription: String? {
     switch self {
@@ -47,6 +68,12 @@ enum NativeAudioRuntimeError: LocalizedError {
       return "invalid source"
     case .invalidRate:
       return "rate must be > 0"
+    case .invalidSkipInterval:
+      return "seconds must be >= 0"
+    case .emptyQueue:
+      return "items must not be empty"
+    case .indexOutOfRange:
+      return "index out of range"
     }
   }
 }
@@ -55,6 +82,12 @@ struct PlaybackMetadata: Sendable {
   let title: String?
   let artist: String?
   let artworkURL: String?
+}
+
+struct QueueEntry: Sendable {
+  let src: String
+  let id: Int64?
+  let metadata: PlaybackMetadata
 }
 
 struct RuntimeSnapshot: Sendable {

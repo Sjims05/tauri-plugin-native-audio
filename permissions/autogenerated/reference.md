@@ -8,10 +8,15 @@ Default permissions for the plugin
 - `allow-register-listener`
 - `allow-remove-listener`
 - `allow-set-source`
+- `allow-set-queue`
+- `allow-next`
+- `allow-previous`
+- `allow-skip-to`
 - `allow-play`
 - `allow-pause`
 - `allow-seek-to`
 - `allow-set-rate`
+- `allow-set-skip-interval`
 - `allow-get-state`
 - `allow-get-progress-checkpoint`
 - `allow-clear-progress-checkpoint`
@@ -159,6 +164,32 @@ Denies the initialize command without any pre-configured scope.
 <tr>
 <td>
 
+`native-audio:allow-next`
+
+</td>
+<td>
+
+Enables the next command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:deny-next`
+
+</td>
+<td>
+
+Denies the next command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `native-audio:allow-pause`
 
 </td>
@@ -204,6 +235,32 @@ Enables the play command without any pre-configured scope.
 <td>
 
 Denies the play command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:allow-previous`
+
+</td>
+<td>
+
+Enables the previous command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:deny-previous`
+
+</td>
+<td>
+
+Denies the previous command without any pre-configured scope.
 
 </td>
 </tr>
@@ -289,6 +346,32 @@ Denies the seek_to command without any pre-configured scope.
 <tr>
 <td>
 
+`native-audio:allow-set-queue`
+
+</td>
+<td>
+
+Enables the set_queue command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:deny-set-queue`
+
+</td>
+<td>
+
+Denies the set_queue command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `native-audio:allow-set-rate`
 
 </td>
@@ -315,6 +398,32 @@ Denies the set_rate command without any pre-configured scope.
 <tr>
 <td>
 
+`native-audio:allow-set-skip-interval`
+
+</td>
+<td>
+
+Enables the set_skip_interval command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:deny-set-skip-interval`
+
+</td>
+<td>
+
+Denies the set_skip_interval command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `native-audio:allow-set-source`
 
 </td>
@@ -334,6 +443,32 @@ Enables the set_source command without any pre-configured scope.
 <td>
 
 Denies the set_source command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:allow-skip-to`
+
+</td>
+<td>
+
+Enables the skip_to command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:deny-skip-to`
+
+</td>
+<td>
+
+Denies the skip_to command without any pre-configured scope.
 
 </td>
 </tr>

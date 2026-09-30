@@ -26,6 +26,10 @@ actor PlaybackRuntimeActor {
   private var wasPlayingBeforeInterruption = false
   private var isAppInForeground = true
 
+  private var queue: [QueueEntry] = []
+  private var queueIndex = -1
+  private var queueLoadRevision: Int64 = 0
+
   private var lastEmittedState: NativeAudioState?
   private var lastProgressTickEmitAt = Date.distantPast
   private var appDidBecomeActiveObserver: NSObjectProtocol?
@@ -54,19 +58,65 @@ actor PlaybackRuntimeActor {
     artist: String?,
     artworkURL: String?
   ) async throws -> NativeAudioState {
+    let entry = QueueEntry(
+      src: src,
+      id: id,
+      metadata: PlaybackMetadata(title: title, artist: artist, artworkURL: artworkURL)
+    )
+    return try await setQueue(items: [entry], startIndex: 0, startPosition: 0.0)
+  }
+
+  func setQueue(items: [QueueEntry], startIndex: Int, startPosition: Double) async throws -> NativeAudioState {
+    guard !items.isEmpty else {
+      throw NativeAudioRuntimeError.emptyQueue
+    }
+    guard items.indices.contains(startIndex) else {
+      throw NativeAudioRuntimeError.indexOutOfRange
+    }
+
     ensureConfigured()
     try audioSessionController.configurePlaybackCategory()
 
-    let playbackURL = try await sourceResolver.resolvePlayableURL(src: src)
-    let sourceRevision = machine.advanceSourceRevision()
-    machine.setStoryId(id)
-    machine.setMetadata(PlaybackMetadata(title: title, artist: artist, artworkURL: artworkURL))
+    let previousQueue = queue
+    let previousIndex = queueIndex
+    queue = items
+    do {
+      try await loadQueueEntry(at: startIndex, autoplay: false)
+    } catch {
+      queue = previousQueue
+      queueIndex = previousIndex
+      updateTrackCommands()
+      throw error
+    }
 
-    wasPlayingBeforeInterruption = false
-    playerAdapter.pause()
-    playerAdapter.replaceCurrentItem(url: playbackURL, sourceRevision: sourceRevision)
+    if startPosition.isFinite, startPosition > 0 {
+      return await seekTo(position: startPosition)
+    }
+    return snapshot()
+  }
 
-    emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: true, refreshArtwork: true)
+  func next() async throws -> NativeAudioState {
+    guard hasNextEntry else {
+      return snapshot()
+    }
+    try await loadQueueEntry(at: queueIndex + 1, autoplay: machine.desiredPlaying)
+    return snapshot()
+  }
+
+  func previous() async throws -> NativeAudioState {
+    // Like other music players: restart the current track unless playback is near its beginning.
+    if queueIndex <= 0 || snapshot().currentTime > previousRestartThresholdSeconds {
+      return await seekTo(position: 0.0)
+    }
+    try await loadQueueEntry(at: queueIndex - 1, autoplay: machine.desiredPlaying)
+    return snapshot()
+  }
+
+  func skipTo(index: Int) async throws -> NativeAudioState {
+    guard queue.indices.contains(index) else {
+      throw NativeAudioRuntimeError.indexOutOfRange
+    }
+    try await loadQueueEntry(at: index, autoplay: machine.desiredPlaying)
     return snapshot()
   }
 
@@ -127,6 +177,14 @@ actor PlaybackRuntimeActor {
     return snapshot()
   }
 
+  func setSkipInterval(seconds: Double) throws -> NativeAudioState {
+    guard seconds.isFinite, seconds >= 0 else {
+      throw NativeAudioRuntimeError.invalidSkipInterval
+    }
+    remoteCommandController.setSkipInterval(seconds: seconds)
+    return snapshot()
+  }
+
   func getState() -> NativeAudioState {
     snapshot()
   }
@@ -153,6 +211,9 @@ actor PlaybackRuntimeActor {
     await sourceResolver.cleanupAll()
 
     machine.resetAll()
+    queue = []
+    queueIndex = -1
+    queueLoadRevision += 1
     wasPlayingBeforeInterruption = false
     lastEmittedState = nil
     lastProgressTickEmitAt = .distantPast
@@ -160,6 +221,43 @@ actor PlaybackRuntimeActor {
 
     try? audioSessionController.setActive(false)
     emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: true, refreshArtwork: false)
+  }
+
+  private var hasNextEntry: Bool {
+    queueIndex >= 0 && queueIndex + 1 < queue.count
+  }
+
+  /// Swaps the player item to `queue[index]`. If a newer load starts while the source is being
+  /// resolved, the newer one wins and this one returns without touching the player.
+  private func loadQueueEntry(at index: Int, autoplay: Bool) async throws {
+    let entry = queue[index]
+    queueLoadRevision += 1
+    let loadRevision = queueLoadRevision
+
+    let playbackURL = try await sourceResolver.resolvePlayableURL(src: entry.src)
+    guard loadRevision == queueLoadRevision else {
+      return
+    }
+
+    queueIndex = index
+    let sourceRevision = machine.advanceSourceRevision()
+    machine.setStoryId(entry.id)
+    machine.setMetadata(entry.metadata)
+
+    wasPlayingBeforeInterruption = false
+    playerAdapter.pause()
+    playerAdapter.replaceCurrentItem(url: playbackURL, sourceRevision: sourceRevision)
+    updateTrackCommands()
+
+    emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: true, refreshArtwork: true)
+
+    if autoplay {
+      _ = try await play()
+    }
+  }
+
+  private func updateTrackCommands() {
+    remoteCommandController.setTrackCommandsEnabled(hasNext: hasNextEntry, hasPrevious: queueIndex >= 0)
   }
 
   private func ensureConfigured() {
@@ -243,7 +341,7 @@ actor PlaybackRuntimeActor {
     emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: false, refreshArtwork: false)
   }
 
-  private func handlePlayerEvent(_ event: PlayerEvent) {
+  private func handlePlayerEvent(_ event: PlayerEvent) async {
     switch event {
     case let .timeControlChanged(sourceRevision):
       guard sourceRevision == machine.sourceRevision else { return }
@@ -286,6 +384,16 @@ actor PlaybackRuntimeActor {
     case let .didReachEnd(sourceRevision):
       guard sourceRevision == machine.sourceRevision else { return }
       if machine.pendingSeek != nil {
+        return
+      }
+      if hasNextEntry {
+        checkpointStore.persistIfNeeded(snapshot: snapshot(), storyId: machine.currentStoryId, force: true)
+        do {
+          try await loadQueueEntry(at: queueIndex + 1, autoplay: true)
+        } catch {
+          machine.markError(error.localizedDescription)
+          emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: true, refreshArtwork: false)
+        }
         return
       }
       machine.markEnded()
@@ -378,8 +486,16 @@ actor PlaybackRuntimeActor {
     case let .seek(position):
       _ = await seekTo(position: position)
     case let .seekDelta(delta):
-      let next = snapshot().currentTime + delta
-      _ = await seekTo(position: next)
+      var target = snapshot().currentTime + delta
+      let duration = playerAdapter.durationSeconds()
+      if duration.isFinite, duration > 0 {
+        target = min(target, duration)
+      }
+      _ = await seekTo(position: target)
+    case .nextTrack:
+      _ = try? await next()
+    case .previousTrack:
+      _ = try? await previous()
     }
   }
 
@@ -388,7 +504,9 @@ actor PlaybackRuntimeActor {
       rawCurrentTime: playerAdapter.currentTimeSeconds(),
       rawDuration: playerAdapter.durationSeconds(),
       isActuallyPlaying: playerAdapter.isActuallyPlaying(),
-      isBuffering: playerAdapter.isBuffering()
+      isBuffering: playerAdapter.isBuffering(),
+      queueIndex: queueIndex,
+      queueLength: queue.count
     )
   }
 
@@ -449,6 +567,9 @@ actor PlaybackRuntimeActor {
       && lhs.isPlaying == rhs.isPlaying
       && lhs.buffering == rhs.buffering
       && lhs.rate == rhs.rate
+      && lhs.queueIndex == rhs.queueIndex
+      && lhs.queueLength == rhs.queueLength
+      && lhs.currentId == rhs.currentId
       && lhs.error == rhs.error
   }
 

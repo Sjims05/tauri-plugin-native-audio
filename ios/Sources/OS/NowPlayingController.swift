@@ -40,6 +40,14 @@ final class NowPlayingController {
       info[MPNowPlayingInfoPropertyPlaybackRate] = state.isPlaying ? state.rate : 0.0
       info[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.audio.rawValue
 
+      if state.queueLength > 0, state.queueIndex >= 0 {
+        info[MPNowPlayingInfoPropertyPlaybackQueueIndex] = state.queueIndex
+        info[MPNowPlayingInfoPropertyPlaybackQueueCount] = state.queueLength
+      } else {
+        info.removeValue(forKey: MPNowPlayingInfoPropertyPlaybackQueueIndex)
+        info.removeValue(forKey: MPNowPlayingInfoPropertyPlaybackQueueCount)
+      }
+
       if let nowPlayingArtwork {
         info[MPMediaItemPropertyArtwork] = nowPlayingArtwork
       } else {

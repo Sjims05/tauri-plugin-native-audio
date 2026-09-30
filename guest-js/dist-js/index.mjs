@@ -9,10 +9,15 @@ const call = async (command, payload) => {
 
 export const initialize = async () => await call('initialize');
 export const setSource = async (payload) => await call('set_source', payload);
+export const setQueue = async (payload) => await call('set_queue', payload);
+export const next = async () => await call('next');
+export const previous = async () => await call('previous');
+export const skipTo = async (index) => await call('skip_to', { index });
 export const play = async () => await call('play');
 export const pause = async () => await call('pause');
 export const seekTo = async (position) => await call('seek_to', { position });
 export const setRate = async (rate) => await call('set_rate', { rate });
+export const setSkipInterval = async (seconds) => await call('set_skip_interval', { seconds });
 export const getState = async () => await call('get_state');
 export const getProgressCheckpoint = async () => await call('get_progress_checkpoint');
 export const clearProgressCheckpoint = async () => await call('clear_progress_checkpoint');

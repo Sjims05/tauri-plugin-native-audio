@@ -7,11 +7,17 @@ enum RemoteCommandEvent: Sendable {
   case toggle
   case seek(position: Double)
   case seekDelta(delta: Double)
+  case nextTrack
+  case previousTrack
 }
 
 final class RemoteCommandController {
   private var remoteCommandTargets: [(MPRemoteCommand, Any)] = []
   private var eventHandler: ((RemoteCommandEvent) -> Void)?
+  /// 0 = next/previous track buttons; > 0 = skip forward/backward buttons that seek this many seconds.
+  private var skipIntervalSeconds = 0.0
+  private var hasNextTrack = false
+  private var hasPreviousTrack = false
 
   deinit {
     unregister()
@@ -29,10 +35,6 @@ final class RemoteCommandController {
       center.pauseCommand.isEnabled = true
       center.togglePlayPauseCommand.isEnabled = true
       center.changePlaybackPositionCommand.isEnabled = true
-      center.skipForwardCommand.isEnabled = true
-      center.skipBackwardCommand.isEnabled = true
-      center.skipForwardCommand.preferredIntervals = [NSNumber(value: remoteSeekStepSeconds)]
-      center.skipBackwardCommand.preferredIntervals = [NSNumber(value: remoteSeekStepSeconds)]
 
       let playTarget = center.playCommand.addTarget { [weak self] _ in
         self?.eventHandler?(.play)
@@ -61,18 +63,66 @@ final class RemoteCommandController {
       }
       remoteCommandTargets.append((center.changePlaybackPositionCommand, changePositionTarget))
 
+      let nextTrackTarget = center.nextTrackCommand.addTarget { [weak self] _ in
+        self?.eventHandler?(.nextTrack)
+        return .success
+      }
+      remoteCommandTargets.append((center.nextTrackCommand, nextTrackTarget))
+
+      let previousTrackTarget = center.previousTrackCommand.addTarget { [weak self] _ in
+        self?.eventHandler?(.previousTrack)
+        return .success
+      }
+      remoteCommandTargets.append((center.previousTrackCommand, previousTrackTarget))
+
       let skipForwardTarget = center.skipForwardCommand.addTarget { [weak self] _ in
-        self?.eventHandler?(.seekDelta(delta: remoteSeekStepSeconds))
+        guard let self else { return .commandFailed }
+        self.eventHandler?(.seekDelta(delta: self.skipIntervalSeconds))
         return .success
       }
       remoteCommandTargets.append((center.skipForwardCommand, skipForwardTarget))
 
       let skipBackwardTarget = center.skipBackwardCommand.addTarget { [weak self] _ in
-        self?.eventHandler?(.seekDelta(delta: -remoteSeekStepSeconds))
+        guard let self else { return .commandFailed }
+        self.eventHandler?(.seekDelta(delta: -self.skipIntervalSeconds))
         return .success
       }
       remoteCommandTargets.append((center.skipBackwardCommand, skipBackwardTarget))
+
+      applyNavigationCommands()
     }
+  }
+
+  func setTrackCommandsEnabled(hasNext: Bool, hasPrevious: Bool) {
+    onMain {
+      hasNextTrack = hasNext
+      hasPreviousTrack = hasPrevious
+      applyNavigationCommands()
+    }
+  }
+
+  func setSkipInterval(seconds: Double) {
+    onMain {
+      skipIntervalSeconds = seconds
+      applyNavigationCommands()
+    }
+  }
+
+  /// Skip-interval and track commands share the same lock screen slots, so only one pair is enabled.
+  private func applyNavigationCommands() {
+    guard !remoteCommandTargets.isEmpty else {
+      return
+    }
+    let center = MPRemoteCommandCenter.shared()
+    let useSkipInterval = skipIntervalSeconds > 0
+    center.skipForwardCommand.isEnabled = useSkipInterval
+    center.skipBackwardCommand.isEnabled = useSkipInterval
+    if useSkipInterval {
+      center.skipForwardCommand.preferredIntervals = [NSNumber(value: skipIntervalSeconds)]
+      center.skipBackwardCommand.preferredIntervals = [NSNumber(value: skipIntervalSeconds)]
+    }
+    center.nextTrackCommand.isEnabled = !useSkipInterval && hasNextTrack
+    center.previousTrackCommand.isEnabled = !useSkipInterval && hasPreviousTrack
   }
 
   func unregister() {
@@ -89,6 +139,8 @@ final class RemoteCommandController {
       center.pauseCommand.isEnabled = false
       center.togglePlayPauseCommand.isEnabled = false
       center.changePlaybackPositionCommand.isEnabled = false
+      center.nextTrackCommand.isEnabled = false
+      center.previousTrackCommand.isEnabled = false
       center.skipForwardCommand.isEnabled = false
       center.skipBackwardCommand.isEnabled = false
     }

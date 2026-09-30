@@ -1,3 +1,13 @@
+## What this fork changes
+
+This is a fork of [tauri-plugin-native-audio](https://github.com/uvarov-frontend/tauri-plugin-native-audio) by uvarov-frontend. It adds two things:
+
+**Native queue.** The original plugin plays one source at a time, so moving to the next track relies on JavaScript calling `set_source` again. On Android 12+ (targetSdk 31 and up), this breaks when the app is in the background or the screen is locked: Android blocks the playback service from restarting, so playback stops after the current track. This fork keeps the queue inside the native player, so tracks advance on their own and playback continues with the screen locked, without needing to lower targetSdk. Tested on Android 16 with targetSdk 37.
+
+**Configurable skip buttons.** In the original, the previous/next buttons in the media notification always seek 10 seconds backward/forward. In this fork the seek amount is configurable. The default is `0`, which makes the buttons skip to the previous/next track in the queue instead.
+
+IOS has not been tested
+
 # tauri-plugin-native-audio
 
 Native mobile audio playback for Tauri applications.
@@ -84,10 +94,15 @@ Add plugin permissions to your capability file (example: `src-tauri/capabilities
 - `allow-register-listener`
 - `allow-remove-listener`
 - `allow-set-source`
+- `allow-set-queue`
+- `allow-next`
+- `allow-previous`
+- `allow-skip-to`
 - `allow-play`
 - `allow-pause`
 - `allow-seek-to`
 - `allow-set-rate`
+- `allow-set-skip-interval`
 - `allow-get-state`
 - `allow-get-progress-checkpoint`
 - `allow-dispose`
@@ -124,7 +139,9 @@ This plugin does not require plugin-specific `tauri.conf.json > plugins.native-a
 Runtime behavior is configured from JS commands:
 
 - `setSource({ src, id?, title, artist, artworkUrl })`
+- `setQueue({ items, startIndex?, startPosition? })`
 - `setRate(rate)`
+- `setSkipInterval(seconds)`
 - `seekTo(positionSeconds)`
 
 ## Usage
@@ -170,6 +187,56 @@ unlisten();
 await dispose();
 ```
 
+## Queue
+
+`setQueue` hands the whole playlist to the native player, so tracks keep advancing while the screen is locked
+and the WebView is suspended. By default the previous / next buttons in the Android notification, the iOS lock
+screen and Control Center, and headset / Bluetooth controls all move through this queue
+(see [Previous / next buttons](#previous--next-buttons) to make them seek instead).
+
+```ts
+import { setQueue, play, next, previous, skipTo } from "tauri-plugin-native-audio-api";
+
+await setQueue({
+  items: [
+    { src: "https://example.com/1.mp3", id: 1, title: "Song 1", artist: "Artist" },
+    { src: "https://example.com/2.mp3", id: 2, title: "Song 2", artist: "Artist" },
+    { src: "https://example.com/3.mp3", id: 3, title: "Song 3", artist: "Artist" }
+  ],
+  startIndex: 0
+});
+await play();
+
+await next();      // go to the next track (no-op on the last track)
+await previous();  // restart the current track if more than 3s in, otherwise go to the previous track
+await skipTo(2);   // jump to a specific index
+```
+
+- The player advances to the next item automatically when a track ends; `status` becomes `ended` only after the last item.
+- `next` / `previous` / `skipTo` keep the current play/pause state.
+- `setSource` is equivalent to a queue with a single item.
+- Track changes are reported through `queueIndex`, `queueLength` and `currentId` in `NativeAudioState`.
+
+## Previous / next buttons
+
+`setSkipInterval(seconds)` sets what the previous / next buttons in the Android notification, the iOS lock screen
+and Control Center, and headset / Bluetooth controls do:
+
+- `0` (the default): skip whole tracks in the queue, like `previous()` / `next()`. You don't need to call
+  `setSkipInterval` for this.
+- Above `0`: seek back / forward by that many seconds within the current track. On iOS the lock screen shows
+  skip-interval buttons (for example "15") instead of track buttons.
+
+```ts
+import { setSkipInterval } from "tauri-plugin-native-audio-api";
+
+await setSkipInterval(15); // buttons seek 15s back / forward (podcasts, audiobooks)
+await setSkipInterval(0);  // buttons skip whole tracks again
+```
+
+- The value can be changed at any time, and is kept for the rest of the app session (also across `dispose()`).
+- It only affects the system buttons. The JS `next()` / `previous()` commands always change track.
+
 ## JavaScript API
 
 Types:
@@ -184,6 +251,9 @@ export type NativeAudioState = {
   isPlaying: boolean;
   buffering: boolean;
   rate: number;
+  queueIndex: number; // -1 when nothing is loaded
+  queueLength: number;
+  currentId?: number; // `id` of the current item, when one was given
   error?: string;
 };
 
@@ -193,6 +263,14 @@ export type NativeAudioSetSourcePayload = {
   title?: string;
   artist?: string;
   artworkUrl?: string;
+};
+
+export type NativeAudioQueueItem = NativeAudioSetSourcePayload;
+
+export type NativeAudioSetQueuePayload = {
+  items: NativeAudioQueueItem[];
+  startIndex?: number;    // default 0
+  startPosition?: number; // seconds into the start item, default 0
 };
 
 export type NativeAudioProgressCheckpoint = {
@@ -207,10 +285,15 @@ Commands:
 
 - `initialize(): Promise<NativeAudioState>`
 - `setSource(payload: NativeAudioSetSourcePayload): Promise<NativeAudioState>`
+- `setQueue(payload: NativeAudioSetQueuePayload): Promise<NativeAudioState>`
+- `next(): Promise<NativeAudioState>`
+- `previous(): Promise<NativeAudioState>`
+- `skipTo(index: number): Promise<NativeAudioState>`
 - `play(): Promise<NativeAudioState>`
 - `pause(): Promise<NativeAudioState>`
 - `seekTo(position: number): Promise<NativeAudioState>`
 - `setRate(rate: number): Promise<NativeAudioState>`
+- `setSkipInterval(seconds: number): Promise<NativeAudioState>`
 - `getState(): Promise<NativeAudioState>`
 - `getProgressCheckpoint(): Promise<NativeAudioProgressCheckpoint | null>`
 - `dispose(): Promise<void>`
@@ -219,8 +302,11 @@ Commands:
 Validation and errors:
 
 - `setSource` rejects if `src` is empty.
+- `setQueue` rejects if `items` is empty, an item has an empty `src`, or `startIndex` is out of range.
+- `skipTo` rejects if `index` is out of range.
 - `seekTo` rejects if `position` is missing/non-finite.
 - `setRate` rejects if `rate <= 0` or non-finite.
+- `setSkipInterval` rejects if `seconds < 0` or non-finite.
 - Native failures can also be reflected in `NativeAudioState.error` with status `error`.
 
 State semantics:
@@ -244,7 +330,7 @@ Checkpoint shape:
 
 How it works:
 
-- Pass `id` in `setSource(...)` to associate playback with an app-level item.
+- Pass `id` in `setSource(...)` (or on each `setQueue` item) to associate playback with an app-level item.
 - During playback, the plugin stores a single checkpoint (v1) in native storage:
   - Android: `SharedPreferences`
   - iOS: `UserDefaults`
@@ -310,7 +396,7 @@ iOS app closes right after launch on iOS 14:
 
 iOS playback runs through a single actor-owned runtime.
 
-- Playback commands (`setSource`, `play`, `pause`, `seekTo`, `setRate`) are serialized in one state owner.
+- Playback commands (`setSource`, `setQueue`, `next`, `previous`, `skipTo`, `play`, `pause`, `seekTo`, `setRate`, `setSkipInterval`) are serialized in one state owner.
 - `setSource` and `seekTo` use revision fencing (`sourceRevision`, `seekRevision`) to ignore stale async callbacks.
 - Seek is processed as a deterministic two-phase flow (`pending -> committed`).
 - Native state is emitted through `native_audio_state` with the `NativeAudioState` payload.
