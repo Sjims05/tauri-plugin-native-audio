@@ -29,31 +29,39 @@ It is designed for real mobile playback flows: background-friendly behavior, loc
 
 ## Install
 
-_This plugin requires a Rust version of at least **1.77.2**._
+_This plugin requires Rust **1.77.2** or newer._
 
-There are three general methods of installation:
+This fork isn't published to crates.io or npm, so install it straight from GitHub. If you're switching from the original plugin, remove it first. The package names are the same, so your existing imports and permission identifiers keep working.
 
-1. crates.io + npm (simplest)
-2. Git dependency for Rust + npm package for JS
-3. Git/path dependency for both Rust and JS in monorepo/submodule setup
-
-Install the core plugin in `src-tauri/Cargo.toml`:
+Add the Rust plugin in `src-tauri/Cargo.toml`:
 
 ```toml
 [dependencies]
-tauri-plugin-native-audio = "1"
-# or from Git:
-tauri-plugin-native-audio = { git = "https://github.com/uvarov-frontend/tauri-plugin-native-audio", tag = "v1.0.5" }
+tauri-plugin-native-audio = { git = "https://github.com/Sjims05/tauri-plugin-native-audio", tag = "v1.1.0" }
 ```
 
-Install the JavaScript guest bindings:
+Add the JavaScript bindings:
 
 ```sh
-pnpm add tauri-plugin-native-audio-api
+pnpm add github:Sjims05/tauri-plugin-native-audio#v1.1.0
 # or
-npm add tauri-plugin-native-audio-api
+npm install github:Sjims05/tauri-plugin-native-audio#v1.1.0
 # or
-yarn add tauri-plugin-native-audio-api
+yarn add github:Sjims05/tauri-plugin-native-audio#v1.1.0
+```
+
+Use the same tag for both, so the Rust and JS sides always match.
+
+### Local development
+
+To work on the plugin itself, clone the repo next to your app and use path dependencies:
+
+```toml
+tauri-plugin-native-audio = { path = "../../tauri-plugin-native-audio" }
+```
+
+```sh
+npm install ../tauri-plugin-native-audio
 ```
 
 ## Setting up
