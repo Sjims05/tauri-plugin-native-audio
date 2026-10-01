@@ -9,27 +9,55 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
 import androidx.media3.ui.PlayerNotificationManager
 
 private const val NOTIFICATION_ID = 9501
 private const val CHANNEL_ID_SUFFIX = ".native_audio"
 private const val NOTIFICATION_ICON_NAME = "ic_notification"
 
-class NativeAudioService : MediaSessionService() {
+/**
+ * Keeps playback alive in the background and shows the media notification. It's a library service
+ * so Android Auto can connect to it to browse and play; it's only reachable from outside the app
+ * when carSupport is enabled (see build.rs).
+ */
+class NativeAudioService : MediaLibraryService() {
     private var notificationManager: PlayerNotificationManager? = null
     private var appLargeIcon: Bitmap? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private var isForeground = false
+    private var isPaused = false
+    // After a pause the service stays in the foreground: with no time limit while Android Auto is
+    // connected (keepAliveWhileCarConnected), otherwise for pausedKeepAliveMinutes. The controls stay
+    // in the notification and in Android Auto, and resuming doesn't need a new foreground start,
+    // which Android 12+ can refuse from the background.
+    private var leaveForegroundScheduled = false
+    private val leaveForeground = Runnable {
+        leaveForegroundScheduled = false
+        stopForegroundCompat(remove = false)
+        isForeground = false
+    }
 
     override fun onCreate() {
         super.onCreate()
         NativeAudioRuntime.ensure(applicationContext)
-        // Don't addSession() here: connecting media3's notification controller makes Android Auto
-        // stop showing the app's now-playing card.
+        // Registering the session connects media3's notification controller, which is what lets the
+        // setControls buttons reach Android Auto and the Android 13+ media controls. Only with
+        // carSupport: for other apps it makes Android Auto hide their now-playing card.
+        if (NativeAudioRuntime.carSupportEnabled(this)) NativeAudioRuntime.mediaSession()?.let { addSession(it) }
         setupNotificationManager()
+        NativeAudioRuntime.onKeepAliveRulesChanged = { applyPausedRules() }
+        NativeAudioRuntime.startWatchingCarConnection(this)
+        // Started with nothing loaded (e.g. Android Auto connecting while the app was closed):
+        // load the last queue, paused, so it's ready to continue where it stopped.
+        NativeAudioRuntime.restoreLastQueueIfIdle(applicationContext)
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
         return NativeAudioRuntime.mediaSession()
     }
 
@@ -37,7 +65,34 @@ class NativeAudioService : MediaSessionService() {
         // PlayerNotificationManager is the single source for media controls in notification shade.
     }
 
+    /**
+     * While paused and in the foreground: stay as long as Android Auto is connected, otherwise for
+     * pausedKeepAliveMinutes (counted from the pause, or from Android Auto disconnecting).
+     */
+    private fun applyPausedRules() {
+        if (!isPaused || !isForeground) return
+        val keepForCar = NativeAudioRuntime.carConnected && PluginSettings.keepAliveWhileCarConnected(this)
+        val keepAliveMs = PluginSettings.pausedKeepAliveMs(this)
+        when {
+            keepForCar -> {
+                handler.removeCallbacks(leaveForeground)
+                leaveForegroundScheduled = false
+            }
+            keepAliveMs > 0 -> if (!leaveForegroundScheduled) {
+                leaveForegroundScheduled = true
+                handler.postDelayed(leaveForeground, keepAliveMs)
+            }
+            else -> {
+                handler.removeCallbacks(leaveForeground)
+                leaveForeground.run()
+            }
+        }
+    }
+
     override fun onDestroy() {
+        NativeAudioRuntime.stopWatchingCarConnection()
+        NativeAudioRuntime.onKeepAliveRulesChanged = null
+        handler.removeCallbacks(leaveForeground)
         notificationManager?.setPlayer(null)
         notificationManager = null
         appLargeIcon?.recycle()
@@ -82,14 +137,29 @@ class NativeAudioService : MediaSessionService() {
             .setNotificationListener(
                 object : PlayerNotificationManager.NotificationListener {
                     override fun onNotificationPosted(notificationId: Int, notification: Notification, ongoing: Boolean) {
+                        isPaused = !ongoing
                         if (ongoing) {
-                            startForeground(notificationId, notification)
-                        } else {
-                            stopForegroundCompat(remove = false)
+                            handler.removeCallbacks(leaveForeground)
+                            leaveForegroundScheduled = false
+                            // Android 12+ can refuse this when playback resumes from the background
+                            // (ForegroundServiceStartNotAllowedException); don't crash the app over it.
+                            try {
+                                startForeground(notificationId, notification)
+                                isForeground = true
+                            } catch (e: IllegalStateException) {
+                                Log.w("plugin/native-audio", "startForeground not allowed", e)
+                            }
+                            return
                         }
+
+                        // Paused or stopped.
+                        if (isForeground) applyPausedRules() else stopForegroundCompat(remove = false)
                     }
 
                     override fun onNotificationCancelled(notificationId: Int, dismissedByUser: Boolean) {
+                        handler.removeCallbacks(leaveForeground)
+                        leaveForegroundScheduled = false
+                        isForeground = false
                         stopForegroundCompat(remove = true)
                         stopSelf()
                     }

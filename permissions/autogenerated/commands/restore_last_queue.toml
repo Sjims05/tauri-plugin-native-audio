@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-restore-last-queue"
+description = "Enables the restore_last_queue command without any pre-configured scope."
+commands.allow = ["restore_last_queue"]
+
+[[permission]]
+identifier = "deny-restore-last-queue"
+description = "Denies the restore_last_queue command without any pre-configured scope."
+commands.deny = ["restore_last_queue"]

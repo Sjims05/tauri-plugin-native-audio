@@ -3,6 +3,7 @@ package app.tauri.nativeaudio
 import androidx.media3.common.C
 import androidx.media3.common.FlagSet
 import androidx.media3.common.ForwardingPlayer
+import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import java.util.concurrent.CopyOnWriteArraySet
 import kotlin.math.max
@@ -25,10 +26,14 @@ private val FIXED_SEEK_COMMANDS = intArrayOf(Player.COMMAND_SEEK_BACK, Player.CO
  *
  * Note: Android Auto's player for apps without Android Auto support draws its own ±10 second
  * buttons and ignores these commands.
+ *
+ * [onPlaylistReplaced] runs after a new queue is set through this player, i.e. by the media session
+ * (Android Auto picking something to play), not by setQueue.
  */
 internal class SkipIntervalPlayer(
     private val player: Player,
     private val skipIntervalMs: () -> Long,
+    private val onPlaylistReplaced: () -> Unit,
 ) : ForwardingPlayer(player) {
     private val listeners = CopyOnWriteArraySet<Player.Listener>()
 
@@ -68,6 +73,36 @@ internal class SkipIntervalPlayer(
 
     override fun seekToNextMediaItem() {
         if (skipIntervalMs() > 0L) seekBy(skipIntervalMs()) else super.seekToNextMediaItem()
+    }
+
+    override fun setMediaItem(mediaItem: MediaItem) {
+        super.setMediaItem(mediaItem)
+        onPlaylistReplaced()
+    }
+
+    override fun setMediaItem(mediaItem: MediaItem, startPositionMs: Long) {
+        super.setMediaItem(mediaItem, startPositionMs)
+        onPlaylistReplaced()
+    }
+
+    override fun setMediaItem(mediaItem: MediaItem, resetPosition: Boolean) {
+        super.setMediaItem(mediaItem, resetPosition)
+        onPlaylistReplaced()
+    }
+
+    override fun setMediaItems(mediaItems: MutableList<MediaItem>) {
+        super.setMediaItems(mediaItems)
+        onPlaylistReplaced()
+    }
+
+    override fun setMediaItems(mediaItems: MutableList<MediaItem>, resetPosition: Boolean) {
+        super.setMediaItems(mediaItems, resetPosition)
+        onPlaylistReplaced()
+    }
+
+    override fun setMediaItems(mediaItems: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long) {
+        super.setMediaItems(mediaItems, startIndex, startPositionMs)
+        onPlaylistReplaced()
     }
 
     /** Tells the session and notification to re-read the available commands. Main thread only. */

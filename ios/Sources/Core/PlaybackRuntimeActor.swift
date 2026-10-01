@@ -2,11 +2,14 @@
 import UIKit
 
 private let seekCommitEpsilonSeconds = 0.02
+private let repeatAddedTracksDefaultsKey = "tauri_native_audio_repeat_added_tracks_v1"
 private let foregroundProgressEmitIntervalSeconds = 1.0 / 40.0
 private let backgroundProgressEmitIntervalSeconds = 0.25
 
 protocol NativeAudioEventEmitter: AnyObject, Sendable {
   func emitNativeAudioState(_ state: NativeAudioState)
+  func emitPlaybackEvent(_ event: PlaybackEventPayload)
+  func emitTrackedListChange(_ change: TrackedListChange)
 }
 
 actor PlaybackRuntimeActor {
@@ -18,6 +21,21 @@ actor PlaybackRuntimeActor {
   private let remoteCommandController = RemoteCommandController()
   private let sourceResolver = SourceResolver()
   private let checkpointStore = CheckpointStore()
+  private let queueSnapshotStore = QueueSnapshotStore()
+  private let playbackEventLog = PlaybackEventLog()
+  /// Whether the current track's `start` playback event was logged (it's logged once it plays).
+  private var currentStartLogged = false
+  private let trackedListsStore = TrackedListsStore()
+  /// The playable folder (playlist, album) the queue was started from, for "folder" tracked lists.
+  private var queueSourceId: String?
+  /// Tracked lists the current play of the current track has already counted towards.
+  private var countedLists = Set<String>()
+  private let itemProgressStore = ItemProgressStore()
+  private var lastItemProgressSavedAt = Date.distantPast
+  // Sleep timer: a time (with a fade-out before it) or the end of the current track.
+  private var sleepTimerTask: Task<Void, Never>?
+  private var sleepTimerEndsAt: Date?
+  private var sleepTimerEndOfTrack = false
 
   private weak var emitter: NativeAudioEventEmitter?
 
@@ -34,6 +52,7 @@ actor PlaybackRuntimeActor {
   // Kept across dispose() so they only have to be set once.
   private var shuffleEnabled = false
   private var repeatMode = RepeatMode.off
+  private var repeatAddedTracks = UserDefaults.standard.object(forKey: repeatAddedTracksDefaultsKey) as? Bool ?? false
 
   private var lastEmittedState: NativeAudioState?
   private var lastProgressTickEmitAt = Date.distantPast
@@ -71,7 +90,8 @@ actor PlaybackRuntimeActor {
     return try await setQueue(items: [entry], startIndex: 0, startPosition: 0.0)
   }
 
-  func setQueue(items: [QueueEntry], startIndex: Int, startPosition: Double) async throws -> NativeAudioState {
+  /// `sourceId`: the playable folder (playlist, album) this queue plays, for "folder" tracked lists.
+  func setQueue(items: [QueueEntry], startIndex: Int, startPosition: Double, sourceId: String? = nil) async throws -> NativeAudioState {
     guard !items.isEmpty else {
       throw NativeAudioRuntimeError.emptyQueue
     }
@@ -85,7 +105,9 @@ actor PlaybackRuntimeActor {
     let previousQueue = queue
     let previousIndex = queueIndex
     let previousOrder = playOrder
+    let previousSourceId = queueSourceId
     queue = items
+    queueSourceId = (sourceId?.isEmpty ?? true) ? nil : sourceId
     rebuildPlayOrder(first: startIndex)
     do {
       try await loadQueueEntry(at: startIndex, autoplay: false)
@@ -93,9 +115,11 @@ actor PlaybackRuntimeActor {
       queue = previousQueue
       queueIndex = previousIndex
       playOrder = previousOrder
+      queueSourceId = previousSourceId
       updateTrackCommands()
       throw error
     }
+    saveQueueSnapshot()
 
     if startPosition.isFinite, startPosition > 0 {
       return await seekTo(position: startPosition)
@@ -127,6 +151,7 @@ actor PlaybackRuntimeActor {
     // Picking a track while shuffled plays it, then shuffles the rest of the queue after it.
     if shuffleEnabled {
       rebuildPlayOrder(first: index)
+      saveQueueSnapshot()
     }
     try await loadQueueEntry(at: index, autoplay: machine.desiredPlaying)
     return snapshot()
@@ -138,6 +163,7 @@ actor PlaybackRuntimeActor {
       shuffleEnabled = enabled
       rebuildPlayOrder(first: queueIndex >= 0 ? queueIndex : nil)
       updateTrackCommands()
+      saveQueueSnapshot()
     }
     emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: true, refreshArtwork: false)
     return snapshot()
@@ -146,7 +172,209 @@ actor PlaybackRuntimeActor {
   func setRepeatMode(_ mode: RepeatMode) -> NativeAudioState {
     repeatMode = mode
     updateTrackCommands()
+    saveQueueSnapshot()
     emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: true, refreshArtwork: false)
+    return snapshot()
+  }
+
+  /// Adds entries right after the current track (`playNext`) or at the end. With shuffle on they're
+  /// placed at the same spot in the play order; the rest of the order stays.
+  func setOptions(repeatAddedTracks: Bool?, trackProgress: Bool?) {
+    if let repeatAddedTracks {
+      self.repeatAddedTracks = repeatAddedTracks
+      UserDefaults.standard.set(repeatAddedTracks, forKey: repeatAddedTracksDefaultsKey)
+    }
+    if let trackProgress {
+      itemProgressStore.trackProgress = trackProgress
+    }
+  }
+
+  /// Pauses after `minutes` (fading out over the last `fadeOutSeconds`), or at the end of the
+  /// current track with `endOfTrack`. Replaces a running timer.
+  func setSleepTimer(minutes: Double?, endOfTrack: Bool, fadeOutSeconds: Double) -> NativeAudioState {
+    clearSleepTimer()
+    if endOfTrack {
+      sleepTimerEndOfTrack = true
+    } else if let minutes {
+      let total = max(0, minutes * 60)
+      let fade = min(max(0, fadeOutSeconds), total)
+      sleepTimerEndsAt = Date().addingTimeInterval(total)
+      sleepTimerTask = Task { [weak self] in
+        try? await Task.sleep(nanoseconds: UInt64((total - fade) * 1_000_000_000))
+        await self?.runSleepFade(seconds: fade)
+      }
+    }
+    emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: true, refreshArtwork: false)
+    return snapshot()
+  }
+
+  func cancelSleepTimer() -> NativeAudioState {
+    clearSleepTimer()
+    emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: true, refreshArtwork: false)
+    return snapshot()
+  }
+
+  private func clearSleepTimer() {
+    sleepTimerTask?.cancel()
+    sleepTimerTask = nil
+    sleepTimerEndsAt = nil
+    sleepTimerEndOfTrack = false
+    playerAdapter.setVolume(1)
+  }
+
+  private func runSleepFade(seconds: Double) async {
+    guard !Task.isCancelled, sleepTimerEndsAt != nil else {
+      return
+    }
+    let steps = Int(seconds * 10)
+    for step in 0..<steps {
+      if Task.isCancelled || sleepTimerEndsAt == nil {
+        return
+      }
+      playerAdapter.setVolume(1 - Float(step + 1) / Float(steps + 1))
+      try? await Task.sleep(nanoseconds: 100_000_000)
+    }
+    guard !Task.isCancelled, sleepTimerEndsAt != nil else {
+      return
+    }
+    _ = await pause()
+    clearSleepTimer()
+    emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: true, refreshArtwork: false)
+  }
+
+  func itemProgress(itemIds: [Int64]?) -> [ItemProgressEntry] {
+    itemProgressStore.list(itemIds: itemIds)
+  }
+
+  func setItemProgress(_ entries: [ItemProgressEntry], merge: Bool) -> [ItemProgressEntry] {
+    itemProgressStore.set(entries, merge: merge)
+  }
+
+  private func recordItemProgress(itemId: Int64?, position: Double, duration: Double, completed: Bool) {
+    guard let itemId else {
+      return
+    }
+    itemProgressStore.record(itemId: itemId, position: position, duration: duration, completed: completed)
+  }
+
+  func addToQueue(items: [QueueEntry], playNext: Bool) async throws -> NativeAudioState {
+    guard !items.isEmpty else {
+      throw NativeAudioRuntimeError.emptyQueue
+    }
+    guard !queue.isEmpty else {
+      return try await setQueue(items: items, startIndex: 0, startPosition: 0.0)
+    }
+    let items = items.map { item -> QueueEntry in
+      var added = item
+      added.addedToQueue = true
+      return added
+    }
+
+    let at = playNext ? queueIndex + 1 : queue.count
+    let playPosition = playNext ? (playOrderPosition ?? -1) + 1 : playOrder.count
+    queue.insert(contentsOf: items, at: at)
+    if at <= queueIndex {
+      queueIndex += items.count
+    }
+    playOrder = shuffleEnabled
+      ? QueueOrder.insert(playOrder, at: at, count: items.count, playPosition: playPosition)
+      : Array(queue.indices)
+    queueChanged()
+    return snapshot()
+  }
+
+  /// Removing the current track moves on to the next one in play order.
+  func removeFromQueue(index: Int) async throws -> NativeAudioState {
+    guard queue.indices.contains(index) else {
+      throw NativeAudioRuntimeError.indexOutOfRange
+    }
+    let removingCurrent = index == queueIndex
+    // What plays instead when the current track is removed (as a pre-removal index).
+    var replacement: Int?
+    if removingCurrent, let position = playOrderPosition {
+      if position + 1 < playOrder.count {
+        replacement = playOrder[position + 1]
+      } else if repeatMode == .all, let first = playOrder.first, first != index {
+        replacement = first
+      }
+    }
+
+    queue.remove(at: index)
+    playOrder = shuffleEnabled ? QueueOrder.remove(playOrder, at: index) : Array(queue.indices)
+    if index < queueIndex {
+      queueIndex -= 1
+    }
+
+    guard removingCurrent else {
+      queueChanged()
+      return snapshot()
+    }
+    if queue.isEmpty {
+      queueIndex = -1
+      playerAdapter.pause()
+      machine.markEnded()
+      queueChanged()
+      return snapshot()
+    }
+    if let replacement {
+      queueChanged()
+      try await loadQueueEntry(at: replacement > index ? replacement - 1 : replacement, autoplay: machine.desiredPlaying)
+      return snapshot()
+    }
+    // The removed track was the last one: stop on the new last track, like the queue ended.
+    queueChanged()
+    try await loadQueueEntry(at: playOrder.last ?? queue.count - 1, autoplay: false)
+    machine.markEnded()
+    emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: true, refreshArtwork: false)
+    return snapshot()
+  }
+
+  /// Moves a queue entry (list indices). With shuffle on the play order stays the same; without
+  /// shuffle the list order is the play order.
+  func moveInQueue(from: Int, to: Int) async throws -> NativeAudioState {
+    guard queue.indices.contains(from), queue.indices.contains(to) else {
+      throw NativeAudioRuntimeError.indexOutOfRange
+    }
+    guard from != to else {
+      return snapshot()
+    }
+    let entry = queue.remove(at: from)
+    queue.insert(entry, at: to)
+    if queueIndex >= 0 {
+      queueIndex = QueueOrder.movedIndex(queueIndex, from: from, to: to)
+    }
+    playOrder = shuffleEnabled ? QueueOrder.move(playOrder, from: from, to: to) : Array(queue.indices)
+    queueChanged()
+    return snapshot()
+  }
+
+  func getQueue() -> (items: [QueueEntry], currentIndex: Int, playOrder: [Int]) {
+    (queue, queueIndex, playOrder)
+  }
+
+  /// Loads the last saved queue (items, track, position, shuffle order, repeat mode), paused.
+  /// Returns nil when nothing was saved.
+  func restoreLastQueue() async throws -> NativeAudioState? {
+    guard let saved = queueSnapshotStore.load() else {
+      return nil
+    }
+    ensureConfigured()
+    try audioSessionController.configurePlaybackCategory()
+
+    queue = saved.items
+    queueSourceId = saved.sourceId
+    shuffleEnabled = saved.shuffle
+    repeatMode = saved.repeatMode
+    if shuffleEnabled, let order = saved.playOrder {
+      playOrder = order
+    } else {
+      rebuildPlayOrder(first: saved.index)
+    }
+    try await loadQueueEntry(at: saved.index, autoplay: false)
+    saveQueueSnapshot()
+    if saved.position > 0 {
+      return await seekTo(position: saved.position)
+    }
     return snapshot()
   }
 
@@ -164,15 +392,31 @@ actor PlaybackRuntimeActor {
 
     machine.clearError()
     playerAdapter.play(rate: machine.playbackRate)
+    logStartIfNeeded()
 
     emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: true, refreshArtwork: false)
     return snapshot()
+  }
+
+  func pendingPlaybackEvents() -> [PlaybackEventPayload] {
+    playbackEventLog.pending()
+  }
+
+  func acknowledgePlaybackEvents(ids: Set<String>) {
+    playbackEventLog.acknowledge(ids: ids)
   }
 
   func pause() async -> NativeAudioState {
     machine.setDesiredPlaying(false)
     machine.clearPendingSeek()
     playerAdapter.pause()
+    saveQueuePosition(force: true)
+    recordItemProgress(
+      itemId: machine.currentStoryId,
+      position: playerAdapter.currentTimeSeconds(),
+      duration: playerAdapter.durationSeconds(),
+      completed: false
+    )
 
     emitState(trigger: .transition, forcePersistCheckpoint: true, forceEmit: true, refreshArtwork: false)
     return snapshot()
@@ -230,6 +474,7 @@ actor PlaybackRuntimeActor {
   func dispose() async {
     let preDisposeSnapshot = snapshot()
     checkpointStore.persistIfNeeded(snapshot: preDisposeSnapshot, storyId: machine.currentStoryId, force: true)
+    saveQueuePosition(force: true)
 
     remoteCommandController.unregister()
     audioSessionController.unregisterObservers()
@@ -305,9 +550,16 @@ actor PlaybackRuntimeActor {
     guard repeatMode == .all, !playOrder.isEmpty else {
       return
     }
+    if !repeatAddedTracks, queue.contains(where: { $0.addedToQueue }) {
+      dropAddedTracks()
+      guard !queue.isEmpty else {
+        return
+      }
+    }
     if shuffleEnabled {
       rebuildPlayOrder(first: nil, recent: ShuffleOrderBuilder.recentTail(playOrder))
     }
+    saveQueueSnapshot()
     try await loadQueueEntry(at: playOrder[0], autoplay: autoplay)
   }
 
@@ -323,6 +575,19 @@ actor PlaybackRuntimeActor {
       return
     }
 
+    // Leaving a track that started but didn't finish.
+    if currentStartLogged {
+      logPlaybackEvent(type: "skip", itemId: machine.currentStoryId, position: playerAdapter.currentTimeSeconds())
+      recordItemProgress(
+        itemId: machine.currentStoryId,
+        position: playerAdapter.currentTimeSeconds(),
+        duration: playerAdapter.durationSeconds(),
+        completed: false
+      )
+    }
+    currentStartLogged = false
+    countedLists.removeAll()
+
     queueIndex = index
     let sourceRevision = machine.advanceSourceRevision()
     machine.setStoryId(entry.id)
@@ -332,6 +597,7 @@ actor PlaybackRuntimeActor {
     playerAdapter.pause()
     playerAdapter.replaceCurrentItem(url: playbackURL, sourceRevision: sourceRevision)
     updateTrackCommands()
+    saveQueuePosition(force: true)
 
     emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: true, refreshArtwork: true)
 
@@ -342,6 +608,116 @@ actor PlaybackRuntimeActor {
 
   private func updateTrackCommands() {
     remoteCommandController.setTrackCommandsEnabled(hasNext: hasNextEntry, hasPrevious: queueIndex >= 0)
+  }
+
+  /// Removes the tracks added with addToQueue before the queue repeats (repeatAddedTracks off).
+  /// The current track may be one of them: it's about to be replaced by the first of the new pass.
+  private func dropAddedTracks() {
+    for index in queue.indices.reversed() where queue[index].addedToQueue {
+      queue.remove(at: index)
+      playOrder = QueueOrder.remove(playOrder, at: index)
+      if index < queueIndex {
+        queueIndex -= 1
+      } else if index == queueIndex {
+        queueIndex = -1
+      }
+    }
+    if !shuffleEnabled {
+      playOrder = Array(queue.indices)
+    }
+  }
+
+  private func logStartIfNeeded() {
+    guard !currentStartLogged, queueIndex >= 0 else {
+      return
+    }
+    currentStartLogged = true
+    logPlaybackEvent(type: "start", itemId: machine.currentStoryId, position: playerAdapter.currentTimeSeconds())
+    countPlay(itemId: machine.currentStoryId, position: playerAdapter.currentTimeSeconds(), completed: false)
+  }
+
+  /// Counts the current play towards the tracked lists whose countAfterSeconds it reached
+  /// (`completed`: it played to the end, which always counts). Each list once per play.
+  private func countPlay(itemId: Int64?, position: Double, completed: Bool) {
+    for list in trackedListsStore.configs() where !countedLists.contains(list.id) {
+      if !completed, position < (list.countAfterSeconds ?? 0) {
+        continue
+      }
+      let value: TrackedListValue
+      if list.track == "item" {
+        guard let itemId else { continue }
+        value = .item(itemId)
+      } else {
+        guard let queueSourceId else { continue }
+        value = .folder(queueSourceId)
+      }
+      countedLists.insert(list.id)
+      guard let change = trackedListsStore.record(config: list, value: value) else {
+        continue
+      }
+      if let emitter {
+        if Thread.isMainThread {
+          emitter.emitTrackedListChange(change)
+        } else {
+          DispatchQueue.main.sync {
+            emitter.emitTrackedListChange(change)
+          }
+        }
+      }
+    }
+  }
+
+  func setTrackedLists(_ configs: [TrackedListConfig]) throws {
+    try trackedListsStore.setConfigs(configs)
+    countedLists.removeAll()
+  }
+
+  func trackedList(id: String) -> [TrackedListEntry] {
+    trackedListsStore.entries(listId: id)
+  }
+
+  func setTrackedList(id: String, entries: [TrackedListEntry], merge: Bool) throws -> [TrackedListEntry] {
+    try trackedListsStore.set(listId: id, entries: entries, merge: merge)
+  }
+
+  func pendingTrackedListChanges() -> [TrackedListChange] {
+    trackedListsStore.pendingChanges()
+  }
+
+  func acknowledgeTrackedListChanges(ids: Set<String>) {
+    trackedListsStore.acknowledge(ids: ids)
+  }
+
+  private func logPlaybackEvent(type: String, itemId: Int64?, position: Double) {
+    guard let itemId else {
+      return
+    }
+    let event = playbackEventLog.record(type: type, itemId: itemId, position: position)
+    if let emitter {
+      if Thread.isMainThread {
+        emitter.emitPlaybackEvent(event)
+      } else {
+        DispatchQueue.main.sync {
+          emitter.emitPlaybackEvent(event)
+        }
+      }
+    }
+  }
+
+  /// After adding, removing or moving entries without changing the current track.
+  private func queueChanged() {
+    updateTrackCommands()
+    saveQueueSnapshot()
+    emitState(trigger: .transition, forcePersistCheckpoint: false, forceEmit: true, refreshArtwork: false)
+  }
+
+  private func saveQueueSnapshot() {
+    queueSnapshotStore.saveQueue(queue, shuffle: shuffleEnabled, playOrder: playOrder, repeatMode: repeatMode, sourceId: queueSourceId)
+    saveQueuePosition(force: true)
+  }
+
+  private func saveQueuePosition(force: Bool) {
+    queueSnapshotStore.savePosition(index: queueIndex, position: playerAdapter.currentTimeSeconds(), force: force)
   }
 
   private func ensureConfigured() {
@@ -468,6 +844,32 @@ actor PlaybackRuntimeActor {
     case let .didReachEnd(sourceRevision):
       guard sourceRevision == machine.sourceRevision else { return }
       if machine.pendingSeek != nil {
+        return
+      }
+      logPlaybackEvent(type: "complete", itemId: machine.currentStoryId, position: playerAdapter.durationSeconds())
+      countPlay(itemId: machine.currentStoryId, position: playerAdapter.durationSeconds(), completed: true)
+      recordItemProgress(
+        itemId: machine.currentStoryId,
+        position: playerAdapter.durationSeconds(),
+        duration: playerAdapter.durationSeconds(),
+        completed: true
+      )
+      currentStartLogged = false
+      countedLists.removeAll()
+      if sleepTimerEndOfTrack {
+        // End-of-track sleep timer: stop here, with the next track ready.
+        clearSleepTimer()
+        machine.setDesiredPlaying(false)
+        if hasNextEntry {
+          do {
+            try await moveToNextEntry(autoplay: false)
+          } catch {
+            machine.markError(error.localizedDescription)
+          }
+        } else {
+          machine.markEnded()
+        }
+        emitState(trigger: .transition, forcePersistCheckpoint: true, forceEmit: true, refreshArtwork: false)
         return
       }
       if repeatMode == .one {
@@ -603,7 +1005,9 @@ actor PlaybackRuntimeActor {
       queueIndex: queueIndex,
       queueLength: queue.count,
       shuffle: shuffleEnabled,
-      repeatMode: repeatMode
+      repeatMode: repeatMode,
+      sleepTimerEndsAtMs: sleepTimerEndsAt.map { Int64($0.timeIntervalSince1970 * 1000) },
+      sleepTimerEndOfTrack: sleepTimerEndOfTrack
     )
   }
 
@@ -617,6 +1021,14 @@ actor PlaybackRuntimeActor {
     let now = Date()
 
     checkpointStore.persistIfNeeded(snapshot: state, storyId: machine.currentStoryId, force: forcePersistCheckpoint)
+    queueSnapshotStore.savePosition(index: queueIndex, position: state.currentTime, force: false, now: now)
+    if currentStartLogged {
+      countPlay(itemId: machine.currentStoryId, position: state.currentTime, completed: false)
+      if state.isPlaying, now.timeIntervalSince(lastItemProgressSavedAt) >= 15 {
+        lastItemProgressSavedAt = now
+        recordItemProgress(itemId: machine.currentStoryId, position: state.currentTime, duration: state.duration, completed: false)
+      }
+    }
 
     let shouldEmit = forceEmit || shouldEmitState(state, trigger: trigger, now: now)
     if shouldEmit {

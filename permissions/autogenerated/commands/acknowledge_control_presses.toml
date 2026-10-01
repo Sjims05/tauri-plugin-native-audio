@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-acknowledge-control-presses"
+description = "Enables the acknowledge_control_presses command without any pre-configured scope."
+commands.allow = ["acknowledge_control_presses"]
+
+[[permission]]
+identifier = "deny-acknowledge-control-presses"
+description = "Denies the acknowledge_control_presses command without any pre-configured scope."
+commands.deny = ["acknowledge_control_presses"]

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-get-tracked-list-changes"
+description = "Enables the get_tracked_list_changes command without any pre-configured scope."
+commands.allow = ["get_tracked_list_changes"]
+
+[[permission]]
+identifier = "deny-get-tracked-list-changes"
+description = "Denies the get_tracked_list_changes command without any pre-configured scope."
+commands.deny = ["get_tracked_list_changes"]

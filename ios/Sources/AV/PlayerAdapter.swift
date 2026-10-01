@@ -96,6 +96,12 @@ final class PlayerAdapter {
     }
   }
 
+  func setVolume(_ volume: Float) {
+    onMain {
+      player?.volume = volume
+    }
+  }
+
   func setRate(_ rate: Double) {
     onMain {
       guard rate.isFinite, rate > 0 else {

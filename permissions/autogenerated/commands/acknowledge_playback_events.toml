@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-acknowledge-playback-events"
+description = "Enables the acknowledge_playback_events command without any pre-configured scope."
+commands.allow = ["acknowledge_playback_events"]
+
+[[permission]]
+identifier = "deny-acknowledge-playback-events"
+description = "Denies the acknowledge_playback_events command without any pre-configured scope."
+commands.deny = ["acknowledge_playback_events"]

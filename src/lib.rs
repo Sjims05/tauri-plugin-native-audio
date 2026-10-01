@@ -1,3 +1,4 @@
+use serde::Deserialize;
 use tauri::{
     plugin::{Builder, TauriPlugin},
     Runtime,
@@ -9,8 +10,18 @@ const PLUGIN_IDENTIFIER: &str = "app.tauri.nativeaudio";
 #[cfg(target_os = "ios")]
 tauri::ios_plugin_binding!(init_plugin_native_audio);
 
-pub fn init<R: Runtime>() -> TauriPlugin<R> {
-    Builder::new("native-audio")
+/// `plugins.native-audio` in `tauri.conf.json`.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Config {
+    /// Android Auto support. Applied at build time: build.rs adds the manifest entries Android
+    /// Auto needs when this is true, and removes them when it isn't.
+    #[serde(default)]
+    pub car_support: bool,
+}
+
+pub fn init<R: Runtime>() -> TauriPlugin<R, Option<Config>> {
+    Builder::<R, Option<Config>>::new("native-audio")
         .setup(|_app, _api| {
             #[cfg(target_os = "android")]
             {

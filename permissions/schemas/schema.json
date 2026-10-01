@@ -295,6 +295,66 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the acknowledge_control_presses command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-acknowledge-control-presses",
+          "markdownDescription": "Enables the acknowledge_control_presses command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the acknowledge_control_presses command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-acknowledge-control-presses",
+          "markdownDescription": "Denies the acknowledge_control_presses command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the acknowledge_playback_events command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-acknowledge-playback-events",
+          "markdownDescription": "Enables the acknowledge_playback_events command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the acknowledge_playback_events command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-acknowledge-playback-events",
+          "markdownDescription": "Denies the acknowledge_playback_events command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the acknowledge_tracked_list_changes command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-acknowledge-tracked-list-changes",
+          "markdownDescription": "Enables the acknowledge_tracked_list_changes command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the acknowledge_tracked_list_changes command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-acknowledge-tracked-list-changes",
+          "markdownDescription": "Denies the acknowledge_tracked_list_changes command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the add_to_queue command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-add-to-queue",
+          "markdownDescription": "Enables the add_to_queue command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the add_to_queue command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-add-to-queue",
+          "markdownDescription": "Denies the add_to_queue command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the cancel_sleep_timer command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-cancel-sleep-timer",
+          "markdownDescription": "Enables the cancel_sleep_timer command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel_sleep_timer command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-cancel-sleep-timer",
+          "markdownDescription": "Denies the cancel_sleep_timer command without any pre-configured scope."
+        },
+        {
           "description": "Enables the clear_progress_checkpoint command without any pre-configured scope.",
           "type": "string",
           "const": "allow-clear-progress-checkpoint",
@@ -319,6 +379,42 @@
           "markdownDescription": "Denies the dispose command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_control_presses command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-control-presses",
+          "markdownDescription": "Enables the get_control_presses command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_control_presses command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-control-presses",
+          "markdownDescription": "Denies the get_control_presses command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_item_progress command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-item-progress",
+          "markdownDescription": "Enables the get_item_progress command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_item_progress command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-item-progress",
+          "markdownDescription": "Denies the get_item_progress command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_playback_events command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-playback-events",
+          "markdownDescription": "Enables the get_playback_events command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_playback_events command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-playback-events",
+          "markdownDescription": "Denies the get_playback_events command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_progress_checkpoint command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-progress-checkpoint",
@@ -329,6 +425,18 @@
           "type": "string",
           "const": "deny-get-progress-checkpoint",
           "markdownDescription": "Denies the get_progress_checkpoint command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_queue command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-queue",
+          "markdownDescription": "Enables the get_queue command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_queue command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-queue",
+          "markdownDescription": "Denies the get_queue command without any pre-configured scope."
         },
         {
           "description": "Enables the get_state command without any pre-configured scope.",
@@ -343,6 +451,30 @@
           "markdownDescription": "Denies the get_state command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_tracked_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-tracked-list",
+          "markdownDescription": "Enables the get_tracked_list command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_tracked_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-tracked-list",
+          "markdownDescription": "Denies the get_tracked_list command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_tracked_list_changes command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-tracked-list-changes",
+          "markdownDescription": "Enables the get_tracked_list_changes command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_tracked_list_changes command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-tracked-list-changes",
+          "markdownDescription": "Denies the get_tracked_list_changes command without any pre-configured scope."
+        },
+        {
           "description": "Enables the initialize command without any pre-configured scope.",
           "type": "string",
           "const": "allow-initialize",
@@ -353,6 +485,18 @@
           "type": "string",
           "const": "deny-initialize",
           "markdownDescription": "Denies the initialize command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the move_in_queue command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-move-in-queue",
+          "markdownDescription": "Enables the move_in_queue command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the move_in_queue command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-move-in-queue",
+          "markdownDescription": "Denies the move_in_queue command without any pre-configured scope."
         },
         {
           "description": "Enables the next command without any pre-configured scope.",
@@ -415,6 +559,18 @@
           "markdownDescription": "Denies the register_listener command without any pre-configured scope."
         },
         {
+          "description": "Enables the remove_from_queue command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-remove-from-queue",
+          "markdownDescription": "Enables the remove_from_queue command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the remove_from_queue command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-remove-from-queue",
+          "markdownDescription": "Denies the remove_from_queue command without any pre-configured scope."
+        },
+        {
           "description": "Enables the remove_listener command without any pre-configured scope.",
           "type": "string",
           "const": "allow-remove-listener",
@@ -427,6 +583,18 @@
           "markdownDescription": "Denies the remove_listener command without any pre-configured scope."
         },
         {
+          "description": "Enables the restore_last_queue command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-restore-last-queue",
+          "markdownDescription": "Enables the restore_last_queue command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the restore_last_queue command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-restore-last-queue",
+          "markdownDescription": "Denies the restore_last_queue command without any pre-configured scope."
+        },
+        {
           "description": "Enables the seek_to command without any pre-configured scope.",
           "type": "string",
           "const": "allow-seek-to",
@@ -437,6 +605,66 @@
           "type": "string",
           "const": "deny-seek-to",
           "markdownDescription": "Denies the seek_to command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_control_active command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-control-active",
+          "markdownDescription": "Enables the set_control_active command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_control_active command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-control-active",
+          "markdownDescription": "Denies the set_control_active command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_controls command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-controls",
+          "markdownDescription": "Enables the set_controls command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_controls command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-controls",
+          "markdownDescription": "Denies the set_controls command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_item_progress command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-item-progress",
+          "markdownDescription": "Enables the set_item_progress command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_item_progress command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-item-progress",
+          "markdownDescription": "Denies the set_item_progress command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_library command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-library",
+          "markdownDescription": "Enables the set_library command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_library command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-library",
+          "markdownDescription": "Denies the set_library command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_options command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-options",
+          "markdownDescription": "Enables the set_options command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_options command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-options",
+          "markdownDescription": "Denies the set_options command without any pre-configured scope."
         },
         {
           "description": "Enables the set_queue command without any pre-configured scope.",
@@ -499,6 +727,18 @@
           "markdownDescription": "Denies the set_skip_interval command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_sleep_timer command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-sleep-timer",
+          "markdownDescription": "Enables the set_sleep_timer command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_sleep_timer command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-sleep-timer",
+          "markdownDescription": "Denies the set_sleep_timer command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_source command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-source",
@@ -509,6 +749,30 @@
           "type": "string",
           "const": "deny-set-source",
           "markdownDescription": "Denies the set_source command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_tracked_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-tracked-list",
+          "markdownDescription": "Enables the set_tracked_list command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_tracked_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-tracked-list",
+          "markdownDescription": "Denies the set_tracked_list command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_tracked_lists command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-tracked-lists",
+          "markdownDescription": "Enables the set_tracked_lists command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_tracked_lists command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-tracked-lists",
+          "markdownDescription": "Denies the set_tracked_lists command without any pre-configured scope."
         },
         {
           "description": "Enables the skip_to command without any pre-configured scope.",
@@ -523,10 +787,10 @@
           "markdownDescription": "Denies the skip_to command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-initialize`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-set-source`\n- `allow-set-queue`\n- `allow-next`\n- `allow-previous`\n- `allow-skip-to`\n- `allow-play`\n- `allow-pause`\n- `allow-seek-to`\n- `allow-set-rate`\n- `allow-set-skip-interval`\n- `allow-set-shuffle`\n- `allow-set-repeat-mode`\n- `allow-get-state`\n- `allow-get-progress-checkpoint`\n- `allow-clear-progress-checkpoint`\n- `allow-dispose`",
+          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-initialize`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-set-source`\n- `allow-set-queue`\n- `allow-next`\n- `allow-previous`\n- `allow-skip-to`\n- `allow-add-to-queue`\n- `allow-remove-from-queue`\n- `allow-move-in-queue`\n- `allow-get-queue`\n- `allow-restore-last-queue`\n- `allow-play`\n- `allow-pause`\n- `allow-seek-to`\n- `allow-set-rate`\n- `allow-set-skip-interval`\n- `allow-set-shuffle`\n- `allow-set-repeat-mode`\n- `allow-set-library`\n- `allow-set-options`\n- `allow-set-controls`\n- `allow-set-control-active`\n- `allow-get-control-presses`\n- `allow-acknowledge-control-presses`\n- `allow-get-playback-events`\n- `allow-acknowledge-playback-events`\n- `allow-set-tracked-lists`\n- `allow-get-tracked-list`\n- `allow-set-tracked-list`\n- `allow-get-tracked-list-changes`\n- `allow-acknowledge-tracked-list-changes`\n- `allow-set-sleep-timer`\n- `allow-cancel-sleep-timer`\n- `allow-get-item-progress`\n- `allow-set-item-progress`\n- `allow-get-state`\n- `allow-get-progress-checkpoint`\n- `allow-clear-progress-checkpoint`\n- `allow-dispose`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-initialize`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-set-source`\n- `allow-set-queue`\n- `allow-next`\n- `allow-previous`\n- `allow-skip-to`\n- `allow-play`\n- `allow-pause`\n- `allow-seek-to`\n- `allow-set-rate`\n- `allow-set-skip-interval`\n- `allow-set-shuffle`\n- `allow-set-repeat-mode`\n- `allow-get-state`\n- `allow-get-progress-checkpoint`\n- `allow-clear-progress-checkpoint`\n- `allow-dispose`"
+          "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-initialize`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-set-source`\n- `allow-set-queue`\n- `allow-next`\n- `allow-previous`\n- `allow-skip-to`\n- `allow-add-to-queue`\n- `allow-remove-from-queue`\n- `allow-move-in-queue`\n- `allow-get-queue`\n- `allow-restore-last-queue`\n- `allow-play`\n- `allow-pause`\n- `allow-seek-to`\n- `allow-set-rate`\n- `allow-set-skip-interval`\n- `allow-set-shuffle`\n- `allow-set-repeat-mode`\n- `allow-set-library`\n- `allow-set-options`\n- `allow-set-controls`\n- `allow-set-control-active`\n- `allow-get-control-presses`\n- `allow-acknowledge-control-presses`\n- `allow-get-playback-events`\n- `allow-acknowledge-playback-events`\n- `allow-set-tracked-lists`\n- `allow-get-tracked-list`\n- `allow-set-tracked-list`\n- `allow-get-tracked-list-changes`\n- `allow-acknowledge-tracked-list-changes`\n- `allow-set-sleep-timer`\n- `allow-cancel-sleep-timer`\n- `allow-get-item-progress`\n- `allow-set-item-progress`\n- `allow-get-state`\n- `allow-get-progress-checkpoint`\n- `allow-clear-progress-checkpoint`\n- `allow-dispose`"
         }
       ]
     }

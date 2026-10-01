@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-set-tracked-list"
+description = "Enables the set_tracked_list command without any pre-configured scope."
+commands.allow = ["set_tracked_list"]
+
+[[permission]]
+identifier = "deny-set-tracked-list"
+description = "Denies the set_tracked_list command without any pre-configured scope."
+commands.deny = ["set_tracked_list"]

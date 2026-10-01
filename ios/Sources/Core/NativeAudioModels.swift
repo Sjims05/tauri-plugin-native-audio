@@ -17,7 +17,25 @@ struct NativeAudioState: Encodable, Sendable {
   let currentId: Int64?
   let shuffle: Bool
   let repeatMode: String
+  /// When a running sleep timer pauses playback (epoch ms), or nil.
+  let sleepTimerEndsAtMs: Int64?
+  let sleepTimerEndOfTrack: Bool
   let error: String?
+}
+
+struct SetSleepTimerArgs: Decodable, Sendable {
+  let minutes: Double?
+  let endOfTrack: Bool?
+  let fadeOutSeconds: Double?
+}
+
+struct ItemIdsArgs: Decodable, Sendable {
+  let itemIds: [Int64]?
+}
+
+struct SetItemProgressArgs: Decodable, Sendable {
+  let entries: [ItemProgressEntry]?
+  let merge: Bool?
 }
 
 enum RepeatMode: String, Sendable {
@@ -45,6 +63,47 @@ struct SetQueueArgs: Decodable, Sendable {
   let items: [SetSourceArgs]
   let startIndex: Int?
   let startPosition: Double?
+  let sourceId: String?
+}
+
+struct SetTrackedListsArgs: Decodable, Sendable {
+  let lists: [TrackedListConfig]
+}
+
+struct TrackedListArgs: Decodable, Sendable {
+  let id: String?
+}
+
+struct SetTrackedListArgs: Decodable, Sendable {
+  let id: String?
+  let entries: [TrackedListEntry]?
+  let merge: Bool?
+}
+
+struct AddToQueueArgs: Decodable, Sendable {
+  let items: [SetSourceArgs]
+  let playNext: Bool?
+}
+
+struct MoveInQueueArgs: Decodable, Sendable {
+  let from: Int?
+  let to: Int?
+}
+
+/// A queue entry as getQueue reports it: the same shape as a setQueue item.
+struct QueueItemPayload: Encodable, Sendable {
+  let src: String
+  let id: Int64?
+  let title: String?
+  let artist: String?
+  let artworkUrl: String?
+}
+
+struct QueuePayload: Encodable, Sendable {
+  let items: [QueueItemPayload]
+  let currentIndex: Int
+  /// Queue indices in the order they play (the shuffle order when shuffle is on).
+  let playOrder: [Int]
 }
 
 struct SkipToArgs: Decodable, Sendable {
@@ -104,6 +163,22 @@ struct QueueEntry: Sendable {
   let src: String
   let id: Int64?
   let metadata: PlaybackMetadata
+  /// Added with addToQueue; dropped when the queue repeats unless repeatAddedTracks is on.
+  var addedToQueue = false
+}
+
+struct AcknowledgeIdsArgs: Decodable, Sendable {
+  let ids: [String]?
+}
+
+struct SetOptionsArgs: Decodable, Sendable {
+  let resumeLastQueue: Bool?
+  let repeatAddedTracks: Bool?
+  /// Android only: iOS keeps the lock screen controls while paused on its own.
+  let pausedKeepAliveMinutes: Double?
+  /// Android only (Android Auto).
+  let keepAliveWhileCarConnected: Bool?
+  let trackProgress: Bool?
 }
 
 struct RuntimeSnapshot: Sendable {

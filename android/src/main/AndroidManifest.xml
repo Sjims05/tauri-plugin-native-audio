@@ -6,6 +6,11 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application>
+        <!-- Serves artwork Android Auto can't read itself; only images the plugin registered. -->
+        <provider
+            android:name="app.tauri.nativeaudio.ArtworkProvider"
+            android:authorities="${applicationId}.nativeaudio.artwork"
+            android:exported="true" />
         <service
             android:name="app.tauri.nativeaudio.NativeAudioService"
             android:enabled="true"
