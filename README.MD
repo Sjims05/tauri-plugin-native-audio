@@ -61,17 +61,17 @@ Add the Rust plugin in `src-tauri/Cargo.toml`:
 
 ```toml
 [dependencies]
-tauri-plugin-native-audio = { git = "https://github.com/Sjims05/tauri-plugin-native-audio", tag = "v1.2.0" }
+tauri-plugin-native-audio = { git = "https://github.com/Sjims05/tauri-plugin-native-audio", tag = "v1.2.1" }
 ```
 
 Add the JavaScript bindings:
 
 ```sh
-pnpm add github:Sjims05/tauri-plugin-native-audio#v1.2.0
+pnpm add github:Sjims05/tauri-plugin-native-audio#v1.2.1
 # or
-npm install github:Sjims05/tauri-plugin-native-audio#v1.2.0
+npm install github:Sjims05/tauri-plugin-native-audio#v1.2.1
 # or
-yarn add github:Sjims05/tauri-plugin-native-audio#v1.2.0
+yarn add github:Sjims05/tauri-plugin-native-audio#v1.2.1
 ```
 
 Use the same tag for both, so the Rust and JS sides always match.
@@ -352,6 +352,8 @@ The playing queue is saved on the device as it plays and changes: the tracks, th
 
 - `restoreLastQueue()` loads it back, paused, so the app can continue where it stopped, for example at startup.
   It resolves with the new state, or `null` when nothing was saved. It's up to the app whether to call it.
+  When a queue is already loaded, for example one playing from Android Auto while the app opens, it's left
+  alone (it resolves with the current state), so it's safe to call every time the app starts.
 - Android: when the audio service starts with nothing loaded, for example Android Auto connecting while the app
   was closed, or a headset play button, the last queue is loaded automatically so it's ready to continue.
 - The shuffle order is restored exactly, so already played tracks of the current pass don't come back.

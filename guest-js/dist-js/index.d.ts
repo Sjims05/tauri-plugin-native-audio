@@ -268,6 +268,8 @@ export declare const getQueue: () => Promise<NativeAudioQueue>;
 /**
  * Loads the last queue (tracks, current track and position, shuffle order, repeat mode), paused.
  * It's saved automatically as it plays and changes. Resolves with null when nothing was saved.
+ * When a queue is already loaded (for example playing from Android Auto), it's left alone and this
+ * resolves with the current state, so it's safe to call every time the app starts.
  */
 export declare const restoreLastQueue: () => Promise<NativeAudioState | null>;
 export declare const play: () => Promise<NativeAudioState>;

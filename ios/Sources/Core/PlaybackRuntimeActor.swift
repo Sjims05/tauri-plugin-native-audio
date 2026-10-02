@@ -358,6 +358,10 @@ actor PlaybackRuntimeActor {
     guard let saved = queueSnapshotStore.load() else {
       return nil
     }
+    // A queue is already loaded: reloading it would interrupt playback.
+    if !queue.isEmpty {
+      return snapshot()
+    }
     ensureConfigured()
     try audioSessionController.configurePlaybackCategory()
 

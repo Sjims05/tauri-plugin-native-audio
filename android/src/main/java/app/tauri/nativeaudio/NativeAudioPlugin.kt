@@ -54,7 +54,7 @@ private const val ADDED_TO_QUEUE_EXTRA = "app.tauri.nativeaudio.ADDED_TO_QUEUE"
 private const val ARTWORK_URL_EXTRA = "app.tauri.nativeaudio.ARTWORK_URL"
 private const val CAR_APP_META_DATA = "com.google.android.gms.car.application"
 private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 9512
-private const val FOREGROUND_PROGRESS_TICK_MS = 25L
+private const val FOREGROUND_PROGRESS_TICK_MS = 100L
 private const val BACKGROUND_PROGRESS_TICK_MS = 250L
 private const val SEEK_STATE_STALE_MS = 1_500L
 private const val PROGRESS_PERSIST_THROTTLE_MS = 1_000L
@@ -480,6 +480,10 @@ object NativeAudioRuntime {
             // carSupport, which exports the service). Without carSupport it acts as a plain session.
             mediaSession = MediaLibrarySession.Builder(ctx, skipPlayer, LibrarySessionCallback(ctx))
                 .setCustomLayout(PlaybackControls.layout(ctx, playerViewLocked(exoPlayer)))
+                // Media3 otherwise re-sends the playback state every 3 seconds while playing, and Android
+                // Auto redraws its queue each time, scrolling it back to the playing track. Controllers
+                // move the progress bar themselves (the state has the position, speed and its time).
+                .setPeriodicPositionUpdateEnabled(false)
                 .apply {
                     if (pendingIntent != null) setSessionActivity(pendingIntent)
                 }
@@ -739,13 +743,15 @@ object NativeAudioRuntime {
 
     /**
      * Loads the last saved queue (items, track, position, shuffle order, repeat mode), paused.
-     * Returns false when nothing was saved.
+     * Returns false when nothing was saved. Leaves an already loaded queue alone (returns true):
+     * reloading it would interrupt playback, for example from Android Auto while the app's page reloads.
      */
     fun restoreLastQueue(context: Context): Boolean {
         val snapshot = QueueSnapshotStore.load(context.applicationContext) ?: return false
         synchronized(lock) {
             ensure(context)
             val exoPlayer = player ?: return false
+            if (exoPlayer.mediaItemCount > 0) return true
             pendingSeekState = null
             lastError = null
             restoringQueue = true
