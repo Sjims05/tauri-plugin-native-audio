@@ -61,6 +61,16 @@ const CAR_MANIFEST_ENTRIES: &str = r#"<service
     android:name="com.google.android.gms.car.application"
     android:resource="@xml/automotive_app_desc" />"#;
 
+/// The drawable an app can add (res/drawable*/native_audio_car_icon.png or .xml) to give Android Auto a
+/// one-color icon for its player and media card, tinted by Auto. Without it, Auto tints the app icon.
+const CAR_ICON_NAME: &str = "native_audio_car_icon";
+
+/// Added with the car entries when the app has the CAR_ICON_NAME drawable.
+const CAR_ICON_ENTRY: &str = r#"
+<meta-data
+    android:name="androidx.car.app.TintableAttributionIcon"
+    android:resource="@drawable/native_audio_car_icon" />"#;
+
 #[derive(serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct Config {
@@ -81,17 +91,40 @@ fn main() {
 fn update_car_manifest_entries(car_support: bool) {
     println!("cargo:rerun-if-env-changed=TAURI_ANDROID_PROJECT_PATH");
     if car_support {
-        tauri_plugin::mobile::update_android_manifest(
-            CAR_MANIFEST_BLOCK,
-            "application",
-            CAR_MANIFEST_ENTRIES.to_string(),
-        )
+        let mut entries = CAR_MANIFEST_ENTRIES.to_string();
+        if app_has_car_icon() {
+            entries.push_str(CAR_ICON_ENTRY);
+        }
+        tauri_plugin::mobile::update_android_manifest(CAR_MANIFEST_BLOCK, "application", entries)
         .expect("failed to add car support entries to AndroidManifest.xml");
     } else {
         // update_android_manifest always leaves its marker comments behind, so remove the whole
         // block ourselves and leave the manifest exactly as it was before car support was enabled.
         remove_car_manifest_entries();
     }
+}
+
+/// Whether the app's Android project has the `native_audio_car_icon` drawable (in any density folder).
+fn app_has_car_icon() -> bool {
+    let Some(project_path) = std::env::var_os("TAURI_ANDROID_PROJECT_PATH") else {
+        return false;
+    };
+    let res = std::path::Path::new(&project_path).join("app/src/main/res");
+    // Check again when the app's resources change (an icon added or removed).
+    println!("cargo:rerun-if-changed={}", res.display());
+    let Ok(folders) = std::fs::read_dir(&res) else {
+        return false;
+    };
+    folders.flatten().any(|folder| {
+        folder.file_name().to_string_lossy().starts_with("drawable")
+            && std::fs::read_dir(folder.path()).is_ok_and(|files| {
+                files.flatten().any(|file| {
+                    let name = file.file_name();
+                    let name = name.to_string_lossy();
+                    name.strip_prefix(CAR_ICON_NAME).is_some_and(|ext| ext == ".png" || ext == ".xml" || ext == ".webp")
+                })
+            })
+    })
 }
 
 fn remove_car_manifest_entries() {

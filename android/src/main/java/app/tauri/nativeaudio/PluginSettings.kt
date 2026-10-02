@@ -11,6 +11,7 @@ private const val KEY_CONTROLS = "controls"
 private const val KEY_PAUSED_KEEP_ALIVE_MINUTES = "paused_keep_alive_minutes"
 private const val KEY_KEEP_ALIVE_WHILE_CAR_CONNECTED = "keep_alive_while_car_connected"
 private const val KEY_TRACK_PROGRESS = "track_progress"
+private const val KEY_KEEP_QUEUE_ON_STOP = "keep_queue_on_stop"
 private const val DEFAULT_PAUSED_KEEP_ALIVE_MINUTES = 30.0
 
 /**
@@ -35,6 +36,9 @@ internal object PluginSettings {
     fun keepAliveWhileCarConnected(context: Context): Boolean =
         prefs(context).getBoolean(KEY_KEEP_ALIVE_WHILE_CAR_CONNECTED, true)
 
+    /** A stop from outside the app (system media panel, Bluetooth, Android Auto) pauses instead, keeping the queue. */
+    fun keepQueueOnStop(context: Context): Boolean = prefs(context).getBoolean(KEY_KEEP_QUEUE_ON_STOP, true)
+
     /** Remember how far each item played (podcasts, audiobooks), see ItemProgress. */
     fun trackProgress(context: Context): Boolean = prefs(context).getBoolean(KEY_TRACK_PROGRESS, false)
 
@@ -45,8 +49,10 @@ internal object PluginSettings {
         pausedKeepAliveMinutes: Double?,
         keepAliveWhileCarConnected: Boolean?,
         trackProgress: Boolean?,
+        keepQueueOnStop: Boolean?,
     ) {
         prefs(context).edit().apply {
+            keepQueueOnStop?.let { putBoolean(KEY_KEEP_QUEUE_ON_STOP, it) }
             trackProgress?.let { putBoolean(KEY_TRACK_PROGRESS, it) }
             resumeLastQueue?.let { putBoolean(KEY_RESUME_LAST_QUEUE, it) }
             repeatAddedTracks?.let { putBoolean(KEY_REPEAT_ADDED_TRACKS, it) }

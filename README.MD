@@ -61,17 +61,17 @@ Add the Rust plugin in `src-tauri/Cargo.toml`:
 
 ```toml
 [dependencies]
-tauri-plugin-native-audio = { git = "https://github.com/Sjims05/tauri-plugin-native-audio", tag = "v1.2.1" }
+tauri-plugin-native-audio = { git = "https://github.com/Sjims05/tauri-plugin-native-audio", tag = "v1.2.2" }
 ```
 
 Add the JavaScript bindings:
 
 ```sh
-pnpm add github:Sjims05/tauri-plugin-native-audio#v1.2.1
+pnpm add github:Sjims05/tauri-plugin-native-audio#v1.2.2
 # or
-npm install github:Sjims05/tauri-plugin-native-audio#v1.2.1
+npm install github:Sjims05/tauri-plugin-native-audio#v1.2.2
 # or
-yarn add github:Sjims05/tauri-plugin-native-audio#v1.2.1
+yarn add github:Sjims05/tauri-plugin-native-audio#v1.2.2
 ```
 
 Use the same tag for both, so the Rust and JS sides always match.
@@ -370,7 +370,8 @@ await setOptions({
   repeatAddedTracks: true,    // default false
   pausedKeepAliveMinutes: 30,       // Android, default 30
   keepAliveWhileCarConnected: true, // Android with carSupport, default true
-  trackProgress: false              // default false
+  trackProgress: false,             // default false
+  keepQueueOnStop: true             // Android, default true
 });
 ```
 
@@ -387,6 +388,11 @@ await setOptions({
   disconnects, `pausedKeepAliveMinutes` starts counting. The connection is read from Android Auto itself
   (Android for Cars library), since media sessions can't tell a paused car connection from a closed one.
 - `trackProgress`: remember how far each item played, see [Listening progress](#listening-progress).
+- `keepQueueOnStop` (Android): when something outside the app stops playback, the player pauses instead and keeps
+  the queue, so the notification and Android Auto's player stay and playback continues where it was. Android's
+  media panel sends a stop to players that have been paused for about 10 minutes, which would otherwise empty
+  Android Auto's player even while `keepAliveWhileCarConnected` keeps the app running. Bluetooth devices and
+  Android Auto can send a stop too. `false` lets a stop unload the queue.
 - The skip interval (`setSkipInterval`) is saved on the device the same way.
 
 ## Android Auto
@@ -398,6 +404,11 @@ provide and play from it, and uses the plugin's queue, controls and saved queue.
   library service and the Auto media app entry), and removes it again when `carSupport` is turned off.
 - `setLibrary(library)` sets what Auto can browse. It's saved on the device, so Auto can browse and play it
   while the app isn't running; call it again whenever the library changes.
+- The icon on Auto's player and media card is a one-color icon that Auto tints to fit the card. By default Auto
+  uses the app icon, which shows as a filled square when the icon has a solid background. To give it your symbol,
+  add a drawable named `native_audio_car_icon` to the Android project: white on transparent, 24 dp, for example
+  `src-tauri/gen/android/app/src/main/res/drawable-xxxhdpi/native_audio_car_icon.png` (96 px) and the other
+  densities. The build step then points Auto to it.
 - To test a sideloaded build, enable Android Auto's developer settings and turn on **Unknown sources**.
 - iOS: `setLibrary` is accepted but not used yet (CarPlay isn't supported).
 
@@ -871,6 +882,7 @@ export type NativeAudioOptions = {
   pausedKeepAliveMinutes?: number;      // default 30
   keepAliveWhileCarConnected?: boolean; // default true
   trackProgress?: boolean;              // default false
+  keepQueueOnStop?: boolean;            // default true
 };
 
 export type NativeAudioSleepTimer =

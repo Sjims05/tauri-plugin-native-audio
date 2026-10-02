@@ -133,6 +133,13 @@ export type NativeAudioOptions = {
    * with `getItemProgress` / `setItemProgress`. Default false.
    */
   trackProgress?: boolean;
+  /**
+   * Android: when something outside the app stops playback, pause instead and keep the queue loaded,
+   * so the notification and Android Auto's player stay and playback continues where it was. Android's
+   * media panel stops players that were paused for about 10 minutes; Bluetooth devices and Android
+   * Auto can send a stop too. Default true; false lets them unload the queue.
+   */
+  keepQueueOnStop?: boolean;
 };
 
 export type NativeAudioSleepTimer =

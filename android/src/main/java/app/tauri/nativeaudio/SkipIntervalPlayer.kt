@@ -34,6 +34,7 @@ internal class SkipIntervalPlayer(
     private val player: Player,
     private val skipIntervalMs: () -> Long,
     private val onPlaylistReplaced: () -> Unit,
+    private val keepQueueOnStop: () -> Boolean,
 ) : ForwardingPlayer(player) {
     private val listeners = CopyOnWriteArraySet<Player.Listener>()
 
@@ -57,6 +58,15 @@ internal class SkipIntervalPlayer(
         if (command in FIXED_SEEK_COMMANDS) return false
         if (skipIntervalMs() > 0L && command in SEEK_TO_TRACK_COMMANDS) return true
         return super.isCommandAvailable(command)
+    }
+
+    /**
+     * A stop from outside the app: Android's media panel sends one to players paused for about 10
+     * minutes, Bluetooth devices and Android Auto can send one too. Stopping unloads the queue, which
+     * empties Android Auto's player and the notification, so with keepQueueOnStop it pauses instead.
+     */
+    override fun stop() {
+        if (keepQueueOnStop()) pause() else super.stop()
     }
 
     override fun seekToPrevious() {

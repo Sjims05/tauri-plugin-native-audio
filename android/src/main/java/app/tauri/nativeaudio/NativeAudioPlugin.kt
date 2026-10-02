@@ -133,6 +133,7 @@ class SetOptionsArgs {
     var pausedKeepAliveMinutes: Double? = null
     var keepAliveWhileCarConnected: Boolean? = null
     var trackProgress: Boolean? = null
+    var keepQueueOnStop: Boolean? = null
 }
 
 @InvokeArg
@@ -474,6 +475,7 @@ object NativeAudioRuntime {
                 exoPlayer,
                 skipIntervalMs = { skipIntervalMs },
                 onPlaylistReplaced = ::onSessionPlaylistReplaced,
+                keepQueueOnStop = { PluginSettings.keepQueueOnStop(ctx) },
             )
             sessionPlayer = skipPlayer
             // A library session, so Android Auto can browse the setLibrary tree (when the app enables
@@ -896,11 +898,12 @@ object NativeAudioRuntime {
         pausedKeepAliveMinutes: Double?,
         keepAliveWhileCarConnected: Boolean?,
         trackProgress: Boolean?,
+        keepQueueOnStop: Boolean?,
     ) {
         require(pausedKeepAliveMinutes == null || (pausedKeepAliveMinutes.isFinite() && pausedKeepAliveMinutes >= 0)) {
             "pausedKeepAliveMinutes must be >= 0"
         }
-        PluginSettings.setOptions(context, resumeLastQueue, repeatAddedTracks, pausedKeepAliveMinutes, keepAliveWhileCarConnected, trackProgress)
+        PluginSettings.setOptions(context, resumeLastQueue, repeatAddedTracks, pausedKeepAliveMinutes, keepAliveWhileCarConnected, trackProgress, keepQueueOnStop)
         // The service re-applies its pause rules with the new values.
         tickHandler.post { onKeepAliveRulesChanged?.invoke() }
     }
@@ -1880,6 +1883,7 @@ class NativeAudioPlugin(private val activity: Activity) : Plugin(activity) {
                 args.pausedKeepAliveMinutes,
                 args.keepAliveWhileCarConnected,
                 args.trackProgress,
+                args.keepQueueOnStop,
             )
         }.onSuccess {
             invoke.resolve()
