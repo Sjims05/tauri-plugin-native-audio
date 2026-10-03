@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::commands::Item;
+use super::player::Item;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Repeat {
@@ -74,6 +74,10 @@ impl Queue {
 
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
     pub fn entries(&self) -> &[Entry] {

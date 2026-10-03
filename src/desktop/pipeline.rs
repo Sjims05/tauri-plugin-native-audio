@@ -77,7 +77,7 @@ impl Pipeline {
         pipeline
     }
 
-    pub fn next(&mut self) -> Step {
+    pub fn next_step(&mut self) -> Step {
         loop {
             if let Some(step) = self.steps.pop_front() {
                 return step;

@@ -24,7 +24,7 @@ default = ["mobile", "desktop"]
 # Android (Media3) and iOS (AVPlayer).
 mobile = []
 # Windows, macOS, Linux: a gapless Rust player (symphonia decoding, cpal output).
-desktop = ["dep:symphonia", "dep:cpal", "dep:rubato", "dep:rtrb"]
+desktop = ["dep:symphonia", "dep:cpal", "dep:rubato", "dep:rtrb", "dep:souvlaki"]
 
 [dependencies]
 tauri = { version = "2.10.2", features = [] }
@@ -34,9 +34,10 @@ serde_json = "1"
 # The desktop player, only for desktop targets and only with the `desktop` feature.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 symphonia = { version = "0.5", optional = true, default-features = false, features = ["mp3", "flac", "aac", "isomp4", "alac", "wav", "pcm", "ogg", "vorbis", "opt-simd"] }
-cpal = { version = "0.15", optional = true }
+cpal = { version = "0.18", optional = true }
 rubato = { version = "0.16", optional = true }
 rtrb = { version = "0.3", optional = true }
+souvlaki = { version = "0.8", optional = true, default-features = false, features = ["use_zbus"] }
 
 [build-dependencies]
 tauri-plugin = { version = "2.5.3", features = ["build"] }

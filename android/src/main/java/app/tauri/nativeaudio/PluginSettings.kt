@@ -12,6 +12,8 @@ private const val KEY_PAUSED_KEEP_ALIVE_MINUTES = "paused_keep_alive_minutes"
 private const val KEY_KEEP_ALIVE_WHILE_CAR_CONNECTED = "keep_alive_while_car_connected"
 private const val KEY_TRACK_PROGRESS = "track_progress"
 private const val KEY_KEEP_QUEUE_ON_STOP = "keep_queue_on_stop"
+private const val KEY_VOLUME_CURVE = "volume_curve"
+private val VOLUME_CURVES = setOf("linear", "quadratic", "cubic")
 private const val DEFAULT_PAUSED_KEEP_ALIVE_MINUTES = 30.0
 
 /**
@@ -42,6 +44,9 @@ internal object PluginSettings {
     /** Remember how far each item played (podcasts, audiobooks), see ItemProgress. */
     fun trackProgress(context: Context): Boolean = prefs(context).getBoolean(KEY_TRACK_PROGRESS, false)
 
+    /** How a setVolume value becomes loudness: linear, quadratic (default) or cubic. */
+    fun volumeCurve(context: Context): String = prefs(context).getString(KEY_VOLUME_CURVE, null) ?: "quadratic"
+
     fun setOptions(
         context: Context,
         resumeLastQueue: Boolean?,
@@ -50,8 +55,13 @@ internal object PluginSettings {
         keepAliveWhileCarConnected: Boolean?,
         trackProgress: Boolean?,
         keepQueueOnStop: Boolean?,
+        volumeCurve: String?,
     ) {
+        require(volumeCurve == null || volumeCurve in VOLUME_CURVES) {
+            "unknown volume curve \"$volumeCurve\" (linear, quadratic or cubic)"
+        }
         prefs(context).edit().apply {
+            volumeCurve?.let { putString(KEY_VOLUME_CURVE, it) }
             keepQueueOnStop?.let { putBoolean(KEY_KEEP_QUEUE_ON_STOP, it) }
             trackProgress?.let { putBoolean(KEY_TRACK_PROGRESS, it) }
             resumeLastQueue?.let { putBoolean(KEY_RESUME_LAST_QUEUE, it) }

@@ -89,6 +89,8 @@ data class NativeAudioState(
     /** A sleep timer that pauses at the end of the current track. */
     val sleepTimerEndOfTrack: Boolean = false,
     val error: String? = null,
+    /** The player's own volume, 0 to 1 (on top of the system volume). */
+    val volume: Double = 1.0,
 )
 
 data class NativeAudioProgressCheckpoint(
@@ -134,6 +136,7 @@ class SetOptionsArgs {
     var keepAliveWhileCarConnected: Boolean? = null
     var trackProgress: Boolean? = null
     var keepQueueOnStop: Boolean? = null
+    var volumeCurve: String? = null
 }
 
 @InvokeArg
@@ -209,6 +212,11 @@ class SetRateArgs {
     var rate: Double? = null
 }
 
+@InvokeArg
+class SetVolumeArgs {
+    var volume: Double? = null
+}
+
 /**
  * A larger audio output buffer than ExoPlayer's default (0.25 to 0.75 s). When the screen turns on
  * or off, some phones stall the app's audio for close to a second (measured: ~0.8 s of underrun
@@ -250,6 +258,21 @@ object NativeAudioRuntime {
     @Volatile
     private var skipIntervalMs = 0L
     private var shuffleEnabled = false
+    /** setVolume (a slider's position); kept here so a new player (service restart) gets it too. */
+    private var volume = 1f
+    /** The volume curve (setOptions volumeCurve) as a power: what's heard is volume^volumeExponent. */
+    private var volumeExponent = 2
+    /** A sleep timer is fading out: it sets the player volume meanwhile. */
+    private var sleepFading = false
+
+    private fun volumeExponentOf(curve: String) = when (curve) {
+        "linear" -> 1
+        "cubic" -> 3
+        else -> 2
+    }
+
+    /** The player volume for the set volume. */
+    private fun gainLocked(): Float = Math.pow(volume.toDouble(), volumeExponent.toDouble()).toFloat()
     private var repeatMode = Player.REPEAT_MODE_OFF
     // The shuffle order handed to ExoPlayer, kept to detect the wrap to a new pass.
     private var shuffleIndices = IntArray(0)
@@ -448,6 +471,7 @@ object NativeAudioRuntime {
             val ctx = context.applicationContext
             appContext = ctx
             skipIntervalMs = PluginSettings.skipIntervalMs(ctx)
+            volumeExponent = volumeExponentOf(PluginSettings.volumeCurve(ctx))
 
             val audioAttributes = AudioAttributes.Builder()
                 .setUsage(C.USAGE_MEDIA)
@@ -460,6 +484,7 @@ object NativeAudioRuntime {
             exoPlayer.setWakeMode(C.WAKE_MODE_LOCAL)
             exoPlayer.repeatMode = repeatMode
             exoPlayer.shuffleModeEnabled = shuffleEnabled
+            exoPlayer.volume = gainLocked()
             exoPlayer.addListener(playerListener)
             player = exoPlayer
             val launchIntent = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
@@ -645,6 +670,16 @@ object NativeAudioRuntime {
             pendingSeekState = PendingSeekState(shouldResume = shouldResume, startedAtMs = System.currentTimeMillis())
             if (!shouldResume && exoPlayer.playWhenReady) exoPlayer.pause()
             exoPlayer.seekTo(safeMs)
+        }
+        emitState()
+    }
+
+    fun setVolume(context: Context, value: Double) {
+        synchronized(lock) {
+            ensure(context)
+            volume = value.coerceIn(0.0, 1.0).toFloat()
+            // During a sleep timer's fade-out the fade sets it.
+            if (!sleepFading) player?.volume = gainLocked()
         }
         emitState()
     }
@@ -863,8 +898,9 @@ object NativeAudioRuntime {
         tickHandler.removeCallbacks(sleepTimerRunnable)
         player?.let {
             it.pauseAtEndOfMediaItems = false
-            it.volume = 1f
+            it.volume = gainLocked()
         }
+        sleepFading = false
         sleepTimerEndsAtMs = null
         sleepTimerMinutes = null
         sleepTimerEndOfTrack = false
@@ -878,7 +914,8 @@ object NativeAudioRuntime {
                 val exoPlayer = player ?: return
                 if (sleepTimerEndsAtMs == null) return // cancelled meanwhile
                 if (step < steps) {
-                    exoPlayer.volume = 1f - (step + 1).toFloat() / (steps + 1)
+                    sleepFading = true
+                    exoPlayer.volume = gainLocked() * (1f - (step + 1).toFloat() / (steps + 1))
                     tickHandler.postDelayed({ fade(step + 1) }, SLEEP_FADE_STEP_MS)
                     return
                 }
@@ -899,11 +936,18 @@ object NativeAudioRuntime {
         keepAliveWhileCarConnected: Boolean?,
         trackProgress: Boolean?,
         keepQueueOnStop: Boolean?,
+        volumeCurve: String?,
     ) {
         require(pausedKeepAliveMinutes == null || (pausedKeepAliveMinutes.isFinite() && pausedKeepAliveMinutes >= 0)) {
             "pausedKeepAliveMinutes must be >= 0"
         }
-        PluginSettings.setOptions(context, resumeLastQueue, repeatAddedTracks, pausedKeepAliveMinutes, keepAliveWhileCarConnected, trackProgress, keepQueueOnStop)
+        PluginSettings.setOptions(context, resumeLastQueue, repeatAddedTracks, pausedKeepAliveMinutes, keepAliveWhileCarConnected, trackProgress, keepQueueOnStop, volumeCurve)
+        if (volumeCurve != null) {
+            synchronized(lock) {
+                volumeExponent = volumeExponentOf(volumeCurve)
+                if (!sleepFading) player?.volume = gainLocked()
+            }
+        }
         // The service re-applies its pause rules with the new values.
         tickHandler.post { onKeepAliveRulesChanged?.invoke() }
     }
@@ -1526,6 +1570,7 @@ object NativeAudioRuntime {
                 sleepTimerEndsAtMs = sleepTimerEndsAtMs,
                 sleepTimerEndOfTrack = sleepTimerEndOfTrack,
                 error = null,
+                volume = volume.toDouble(),
             )
 
         val rawDurationMs = exoPlayer.duration
@@ -1565,6 +1610,7 @@ object NativeAudioRuntime {
             sleepTimerEndsAtMs = sleepTimerEndsAtMs,
             sleepTimerEndOfTrack = sleepTimerEndOfTrack,
             error = lastError,
+            volume = volume.toDouble(),
         )
     }
 
@@ -1755,6 +1801,39 @@ class NativeAudioPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     @Command
+    fun setVolume(invoke: Invoke) {
+        val volume = invoke.parseArgs(SetVolumeArgs::class.java).volume
+        if (volume == null || !volume.isFinite()) {
+            invoke.reject("volume must be a number from 0 to 1")
+            return
+        }
+
+        runCatching {
+            NativeAudioRuntime.setVolume(activity.applicationContext, volume)
+        }.onSuccess {
+            invoke.resolve(toJsObject(NativeAudioRuntime.getState(activity.applicationContext)))
+        }.onFailure {
+            invoke.reject(it.message ?: "setVolume failed")
+        }
+    }
+
+    /** Desktop only: Android picks the output itself (speaker, headphones, Bluetooth, the car). */
+    @Command
+    fun getOutputDevices(invoke: Invoke) {
+        val result = JSObject()
+        result.put("devices", JSArray())
+        result.put("selected", JSONObject.NULL)
+        result.put("active", JSONObject.NULL)
+        invoke.resolve(result)
+    }
+
+    /** Desktop only, see getOutputDevices. */
+    @Command
+    fun setOutputDevice(invoke: Invoke) {
+        getOutputDevices(invoke)
+    }
+
+    @Command
     fun setShuffle(invoke: Invoke) {
         val enabled = invoke.parseArgs(SetShuffleArgs::class.java).enabled
         if (enabled == null) {
@@ -1884,6 +1963,7 @@ class NativeAudioPlugin(private val activity: Activity) : Plugin(activity) {
                 args.keepAliveWhileCarConnected,
                 args.trackProgress,
                 args.keepQueueOnStop,
+                args.volumeCurve,
             )
         }.onSuccess {
             invoke.resolve()
@@ -2267,6 +2347,7 @@ class NativeAudioPlugin(private val activity: Activity) : Plugin(activity) {
         payload.put("sleepTimerEndsAtMs", state.sleepTimerEndsAtMs ?: JSONObject.NULL)
         payload.put("sleepTimerEndOfTrack", state.sleepTimerEndOfTrack)
         if (!state.error.isNullOrBlank()) payload.put("error", state.error)
+        payload.put("volume", state.volume)
         return payload
     }
 

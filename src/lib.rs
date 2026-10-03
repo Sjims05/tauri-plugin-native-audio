@@ -35,7 +35,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R, Option<Config>> {
             #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
             {
                 use tauri::Manager;
-                _app.manage(desktop::commands::DesktopAudio::default());
+                _app.manage(desktop::player::DesktopAudio::new(Some(desktop::panel_config(_app.app_handle()))));
             }
             #[cfg(all(feature = "mobile", target_os = "android"))]
             {

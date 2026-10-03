@@ -15,6 +15,9 @@ Default permissions for the plugin
 - `allow-add-to-queue`
 - `allow-remove-from-queue`
 - `allow-move-in-queue`
+- `allow-set-volume`
+- `allow-get-output-devices`
+- `allow-set-output-device`
 - `allow-get-queue`
 - `allow-restore-last-queue`
 - `allow-play`
@@ -285,6 +288,32 @@ Enables the get_item_progress command without any pre-configured scope.
 <td>
 
 Denies the get_item_progress command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:allow-get-output-devices`
+
+</td>
+<td>
+
+Enables the get_output_devices command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:deny-get-output-devices`
+
+</td>
+<td>
+
+Denies the get_output_devices command without any pre-configured scope.
 
 </td>
 </tr>
@@ -864,6 +893,32 @@ Denies the set_options command without any pre-configured scope.
 <tr>
 <td>
 
+`native-audio:allow-set-output-device`
+
+</td>
+<td>
+
+Enables the set_output_device command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:deny-set-output-device`
+
+</td>
+<td>
+
+Denies the set_output_device command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `native-audio:allow-set-queue`
 
 </td>
@@ -1091,6 +1146,32 @@ Enables the set_tracked_lists command without any pre-configured scope.
 <td>
 
 Denies the set_tracked_lists command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:allow-set-volume`
+
+</td>
+<td>
+
+Enables the set_volume command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:deny-set-volume`
+
+</td>
+<td>
+
+Denies the set_volume command without any pre-configured scope.
 
 </td>
 </tr>

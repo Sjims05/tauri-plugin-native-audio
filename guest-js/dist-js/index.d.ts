@@ -19,6 +19,8 @@ export type NativeAudioState = {
   /** A sleep timer that pauses at the end of the current track. */
   sleepTimerEndOfTrack: boolean;
   error?: string;
+  /** The player's own volume (`setVolume`), 0 to 1, on top of the system volume. */
+  volume: number;
 };
 
 /** `off`: stop after the last track. `all`: loop the whole queue. `one`: loop the current track. */
@@ -140,6 +142,33 @@ export type NativeAudioOptions = {
    * Auto can send a stop too. Default true; false lets them unload the queue.
    */
   keepQueueOnStop?: boolean;
+  /**
+   * Desktop: show the player in the system's media controls (the Windows media panel, macOS Now
+   * Playing, MPRIS on Linux) with the media keys. Default true.
+   */
+  mediaControls?: boolean;
+  /**
+   * How a `setVolume` value becomes loudness. Hearing is roughly logarithmic, so with `linear` 50%
+   * sounds only a little quieter; `quadratic` (the default) makes 50% about half as loud (-12 dB);
+   * `cubic` gives finer control at low volumes (50% = -18 dB).
+   */
+  volumeCurve?: 'linear' | 'quadratic' | 'cubic';
+};
+
+export type NativeAudioOutputDevice = {
+  /** Pass to `setOutputDevice`. */
+  id: string;
+  name: string;
+  /** The system's default output. */
+  isDefault: boolean;
+};
+
+export type NativeAudioOutputDevices = {
+  devices: NativeAudioOutputDevice[];
+  /** The chosen device, or null to follow the system default. */
+  selected: string | null;
+  /** The id of the device playing now: the chosen one, or the default while following it (or while the chosen one isn't there). Null before the first playback. */
+  active: string | null;
 };
 
 export type NativeAudioSleepTimer =
@@ -284,7 +313,25 @@ export declare const pause: () => Promise<NativeAudioState>;
 export declare const seekTo: (position: number) => Promise<NativeAudioState>;
 export declare const setRate: (rate: number) => Promise<NativeAudioState>;
 /**
- * What the previous / next buttons in the notification, lock screen and headset do.
+ * The player's own volume, 0 to 1 (a slider's position), on top of the system volume. Default 1.
+ * What's heard follows the `volumeCurve` option.
+ */
+export declare const setVolume: (volume: number) => Promise<NativeAudioState>;
+/**
+ * Desktop: the audio outputs to choose from. Android picks the output itself (speaker, headphones,
+ * Bluetooth, the car) and returns an empty list.
+ */
+export declare const getOutputDevices: () => Promise<NativeAudioOutputDevices>;
+/**
+ * Desktop: plays on this output (an `id` from `getOutputDevices`), or follows the system default
+ * with null (the default; it also moves along when the default changes). When the chosen device goes
+ * away, playback moves to the default and comes back once it's there again. Not saved: set it again
+ * when the app starts. Android: does nothing.
+ */
+export declare const setOutputDevice: (id: string | null) => Promise<NativeAudioOutputDevices>;
+/**
+ * What the previous / next buttons in the notification, lock screen and headset (desktop: the media
+ * keys and the system's media controls) do.
  * `0` (the default) skips whole tracks in the queue; above `0` seeks back / forward by that many seconds.
  */
 export declare const setSkipInterval: (seconds: number) => Promise<NativeAudioState>;

@@ -403,6 +403,18 @@
           "markdownDescription": "Denies the get_item_progress command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_output_devices command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-output-devices",
+          "markdownDescription": "Enables the get_output_devices command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_output_devices command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-output-devices",
+          "markdownDescription": "Denies the get_output_devices command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_playback_events command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-playback-events",
@@ -667,6 +679,18 @@
           "markdownDescription": "Denies the set_options command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_output_device command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-output-device",
+          "markdownDescription": "Enables the set_output_device command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_output_device command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-output-device",
+          "markdownDescription": "Denies the set_output_device command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_queue command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-queue",
@@ -775,6 +799,18 @@
           "markdownDescription": "Denies the set_tracked_lists command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_volume command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-volume",
+          "markdownDescription": "Enables the set_volume command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_volume command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-volume",
+          "markdownDescription": "Denies the set_volume command without any pre-configured scope."
+        },
+        {
           "description": "Enables the skip_to command without any pre-configured scope.",
           "type": "string",
           "const": "allow-skip-to",
@@ -787,10 +823,10 @@
           "markdownDescription": "Denies the skip_to command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-initialize`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-set-source`\n- `allow-set-queue`\n- `allow-next`\n- `allow-previous`\n- `allow-skip-to`\n- `allow-add-to-queue`\n- `allow-remove-from-queue`\n- `allow-move-in-queue`\n- `allow-get-queue`\n- `allow-restore-last-queue`\n- `allow-play`\n- `allow-pause`\n- `allow-seek-to`\n- `allow-set-rate`\n- `allow-set-skip-interval`\n- `allow-set-shuffle`\n- `allow-set-repeat-mode`\n- `allow-set-library`\n- `allow-set-options`\n- `allow-set-controls`\n- `allow-set-control-active`\n- `allow-get-control-presses`\n- `allow-acknowledge-control-presses`\n- `allow-get-playback-events`\n- `allow-acknowledge-playback-events`\n- `allow-set-tracked-lists`\n- `allow-get-tracked-list`\n- `allow-set-tracked-list`\n- `allow-get-tracked-list-changes`\n- `allow-acknowledge-tracked-list-changes`\n- `allow-set-sleep-timer`\n- `allow-cancel-sleep-timer`\n- `allow-get-item-progress`\n- `allow-set-item-progress`\n- `allow-get-state`\n- `allow-get-progress-checkpoint`\n- `allow-clear-progress-checkpoint`\n- `allow-dispose`",
+          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-initialize`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-set-source`\n- `allow-set-queue`\n- `allow-next`\n- `allow-previous`\n- `allow-skip-to`\n- `allow-add-to-queue`\n- `allow-remove-from-queue`\n- `allow-move-in-queue`\n- `allow-set-volume`\n- `allow-get-output-devices`\n- `allow-set-output-device`\n- `allow-get-queue`\n- `allow-restore-last-queue`\n- `allow-play`\n- `allow-pause`\n- `allow-seek-to`\n- `allow-set-rate`\n- `allow-set-skip-interval`\n- `allow-set-shuffle`\n- `allow-set-repeat-mode`\n- `allow-set-library`\n- `allow-set-options`\n- `allow-set-controls`\n- `allow-set-control-active`\n- `allow-get-control-presses`\n- `allow-acknowledge-control-presses`\n- `allow-get-playback-events`\n- `allow-acknowledge-playback-events`\n- `allow-set-tracked-lists`\n- `allow-get-tracked-list`\n- `allow-set-tracked-list`\n- `allow-get-tracked-list-changes`\n- `allow-acknowledge-tracked-list-changes`\n- `allow-set-sleep-timer`\n- `allow-cancel-sleep-timer`\n- `allow-get-item-progress`\n- `allow-set-item-progress`\n- `allow-get-state`\n- `allow-get-progress-checkpoint`\n- `allow-clear-progress-checkpoint`\n- `allow-dispose`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-initialize`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-set-source`\n- `allow-set-queue`\n- `allow-next`\n- `allow-previous`\n- `allow-skip-to`\n- `allow-add-to-queue`\n- `allow-remove-from-queue`\n- `allow-move-in-queue`\n- `allow-get-queue`\n- `allow-restore-last-queue`\n- `allow-play`\n- `allow-pause`\n- `allow-seek-to`\n- `allow-set-rate`\n- `allow-set-skip-interval`\n- `allow-set-shuffle`\n- `allow-set-repeat-mode`\n- `allow-set-library`\n- `allow-set-options`\n- `allow-set-controls`\n- `allow-set-control-active`\n- `allow-get-control-presses`\n- `allow-acknowledge-control-presses`\n- `allow-get-playback-events`\n- `allow-acknowledge-playback-events`\n- `allow-set-tracked-lists`\n- `allow-get-tracked-list`\n- `allow-set-tracked-list`\n- `allow-get-tracked-list-changes`\n- `allow-acknowledge-tracked-list-changes`\n- `allow-set-sleep-timer`\n- `allow-cancel-sleep-timer`\n- `allow-get-item-progress`\n- `allow-set-item-progress`\n- `allow-get-state`\n- `allow-get-progress-checkpoint`\n- `allow-clear-progress-checkpoint`\n- `allow-dispose`"
+          "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-initialize`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-set-source`\n- `allow-set-queue`\n- `allow-next`\n- `allow-previous`\n- `allow-skip-to`\n- `allow-add-to-queue`\n- `allow-remove-from-queue`\n- `allow-move-in-queue`\n- `allow-set-volume`\n- `allow-get-output-devices`\n- `allow-set-output-device`\n- `allow-get-queue`\n- `allow-restore-last-queue`\n- `allow-play`\n- `allow-pause`\n- `allow-seek-to`\n- `allow-set-rate`\n- `allow-set-skip-interval`\n- `allow-set-shuffle`\n- `allow-set-repeat-mode`\n- `allow-set-library`\n- `allow-set-options`\n- `allow-set-controls`\n- `allow-set-control-active`\n- `allow-get-control-presses`\n- `allow-acknowledge-control-presses`\n- `allow-get-playback-events`\n- `allow-acknowledge-playback-events`\n- `allow-set-tracked-lists`\n- `allow-get-tracked-list`\n- `allow-set-tracked-list`\n- `allow-get-tracked-list-changes`\n- `allow-acknowledge-tracked-list-changes`\n- `allow-set-sleep-timer`\n- `allow-cancel-sleep-timer`\n- `allow-get-item-progress`\n- `allow-set-item-progress`\n- `allow-get-state`\n- `allow-get-progress-checkpoint`\n- `allow-clear-progress-checkpoint`\n- `allow-dispose`"
         }
       ]
     }

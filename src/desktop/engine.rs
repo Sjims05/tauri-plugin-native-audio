@@ -80,6 +80,9 @@ struct Shared {
     /// The last start() / stop() asked for, and the last one done.
     requested: AtomicU64,
     done: AtomicU64,
+    /// The output stream stopped working (device unplugged or disabled, the system default changed):
+    /// it needs reopening.
+    device_lost: AtomicBool,
 }
 
 pub struct Engine {
@@ -87,14 +90,17 @@ pub struct Engine {
     commands: Sender<Command>,
     pub sample_rate: u32,
     pub channels: usize,
+    /// The chosen output device's id (see output_devices), or None when following the system default.
+    pub device_id: Option<String>,
     output_thread: Option<thread::JoinHandle<()>>,
     feeder_thread: Option<thread::JoinHandle<()>>,
     stop_output: Sender<()>,
 }
 
 impl Engine {
-    /// Opens the default output device. `next_track` tells what follows each track.
-    pub fn new(next_track: NextTrack) -> Result<Self, String> {
+    /// Opens the output device with id `device` (from output_devices), or follows the system default
+    /// when None or not there. `next_track` tells what follows each track.
+    pub fn new(next_track: NextTrack, device: Option<&str>) -> Result<Self, String> {
         let shared = Arc::new(Shared {
             playing: AtomicBool::new(false),
             volume_bits: AtomicU32::new(1.0f32.to_bits()),
@@ -109,13 +115,21 @@ impl Engine {
             error: Mutex::new(None),
             requested: AtomicU64::new(0),
             done: AtomicU64::new(0),
+            device_lost: AtomicBool::new(false),
         });
 
         // The device's own rate and channels; tracks are converted to it.
         let host = cpal::default_host();
-        let device = host.default_output_device().ok_or("no audio output device")?;
+        let chosen = device.and_then(|id| find_device(&host, id).map(|d| (id.to_string(), d)));
+        let (device_id, device) = match chosen {
+            Some((id, device)) => (Some(id), device),
+            // The system default itself (on Windows its virtual endpoint), not the device that's
+            // the default right now: so per-app routing (Windows settings, SteelSeries Sonar, ...)
+            // applies, and a change of default is reported (device_lost) to reopen on the new one.
+            None => (None, host.default_output_device().ok_or("no audio output device")?),
+        };
         let supported = device.default_output_config().map_err(|e| e.to_string())?;
-        let sample_rate = supported.sample_rate().0;
+        let sample_rate = supported.sample_rate();
         let channels = supported.channels() as usize;
         let capacity = (sample_rate as f32 * BUFFER_SECONDS) as usize * channels;
         let (producer, consumer) = RingBuffer::<f32>::new(capacity);
@@ -153,6 +167,7 @@ impl Engine {
             commands,
             sample_rate,
             channels,
+            device_id,
             output_thread: Some(output_thread),
             feeder_thread: Some(feeder_thread),
             stop_output,
@@ -183,6 +198,11 @@ impl Engine {
         if let Some(track) = self.current_track() {
             self.start(track, position);
         }
+    }
+
+    /// The output device stopped working: open a new Engine.
+    pub fn device_lost(&self) -> bool {
+        self.shared.device_lost.load(Ordering::SeqCst)
     }
 
     /// The playing track.
@@ -249,6 +269,36 @@ impl Waiter {
     }
 }
 
+/// An output device: `id` is stable across runs (for setOutputDevice), `name` is for people.
+pub struct OutputDevice {
+    pub id: String,
+    pub name: String,
+}
+
+/// The output devices, and the system default's id.
+pub fn output_devices() -> (Vec<OutputDevice>, Option<String>) {
+    let host = cpal::default_host();
+    let devices = host
+        .output_devices()
+        .map(|devices| {
+            devices
+                .filter_map(|d| Some(OutputDevice { id: d.id().ok()?.to_string(), name: d.to_string() }))
+                .collect()
+        })
+        .unwrap_or_default();
+    (devices, default_output_device().map(|d| d.id))
+}
+
+/// The device that's the system default right now.
+pub fn default_output_device() -> Option<OutputDevice> {
+    let device = cpal::default_host().default_output_device()?;
+    Some(OutputDevice { id: device.id().ok()?.to_string(), name: device.to_string() })
+}
+
+fn find_device(host: &cpal::Host, id: &str) -> Option<cpal::Device> {
+    host.output_devices().ok()?.find(|d| d.id().is_ok_and(|d| d.to_string() == id))
+}
+
 impl Drop for Engine {
     fn drop(&mut self) {
         let _ = self.commands.send(Command::Shutdown);
@@ -288,9 +338,10 @@ fn output_stream<T: SizedSample + FromSample<f32> + Send + 'static>(
     let channels = config.channels as usize;
     let mut seen_flush = 0u64;
     let silence = T::from_sample(0.0f32);
+    let error_shared = shared.clone();
     device
         .build_output_stream(
-            config,
+            *config,
             move |data: &mut [T], _| {
                 // Seek / skip: drop what's buffered for the old position.
                 let flush = shared.flush_gen.load(Ordering::SeqCst);
@@ -325,7 +376,14 @@ fn output_stream<T: SizedSample + FromSample<f32> + Send + 'static>(
                     shared.underrun_frames.fetch_add(missing, Ordering::SeqCst);
                 }
             },
-            |e| eprintln!("native-audio output error: {e}"),
+            move |e: cpal::Error| match e.kind() {
+                // A glitch, or the system moved the stream itself: it keeps playing.
+                cpal::ErrorKind::Xrun | cpal::ErrorKind::DeviceChanged => {}
+                _ => {
+                    eprintln!("native-audio output: {e}");
+                    error_shared.device_lost.store(true, Ordering::SeqCst);
+                }
+            },
             None,
         )
         .map_err(|e| e.to_string())
@@ -345,6 +403,8 @@ struct Feeder {
     frames_written: u64,
     /// The start() being opened, confirmed at its first track start (or end).
     starting: Option<u64>,
+    /// Decoding ended: "ended" once the rest of the audio is in the buffer.
+    draining_end: bool,
 }
 
 impl Feeder {
@@ -359,13 +419,14 @@ impl Feeder {
             pending: VecDeque::new(),
             frames_written: 0,
             starting: None,
+            draining_end: false,
         }
     }
 
     fn run(mut self, commands: Receiver<Command>) {
         loop {
             // Idle (nothing to decode): wait for a command. Busy: just check for one.
-            let idle = self.pipeline.is_none() && self.pending.is_empty();
+            let idle = self.pipeline.is_none() && self.pending.is_empty() && !self.draining_end;
             let command = if idle {
                 match commands.recv_timeout(Duration::from_millis(200)) {
                     Ok(c) => Some(c),
@@ -420,6 +481,7 @@ impl Feeder {
         *self.shared.error.lock().unwrap() = None;
         self.pipeline = None;
         self.starting = None;
+        self.draining_end = false;
     }
 
     /// The start() being opened is done.
@@ -439,8 +501,15 @@ impl Feeder {
                 return wrote;
             }
         }
+        if self.draining_end {
+            // Ended once the output has played up to here, not when the last audio is buffered.
+            self.draining_end = false;
+            self.shared.end_frame.store(self.frames_written, Ordering::SeqCst);
+            self.shared.ended.store(true, Ordering::SeqCst);
+            return true;
+        }
         let Some(pipeline) = self.pipeline.as_mut() else { return false };
-        match pipeline.next() {
+        match pipeline.next_step() {
             Step::Samples(samples) => {
                 self.pending.extend(samples);
                 self.write_pending();
@@ -459,7 +528,7 @@ impl Feeder {
                 self.pipeline = None;
                 self.shared.end_prepared.store(true, Ordering::SeqCst);
                 self.confirm_start();
-                self.mark_end_when_drained();
+                self.draining_end = true;
             }
         }
         true
@@ -482,17 +551,5 @@ impl Feeder {
             self.frames_written += frames as u64;
         }
         true
-    }
-
-    /// After the last track: say "ended" once its audio has been written out.
-    fn mark_end_when_drained(&mut self) {
-        while !self.pending.is_empty() {
-            if !self.write_pending() {
-                thread::sleep(Duration::from_millis(5));
-            }
-        }
-        // Ended once the output has played up to here, not when the last audio is buffered.
-        self.shared.end_frame.store(self.frames_written, Ordering::SeqCst);
-        self.shared.ended.store(true, Ordering::SeqCst);
     }
 }

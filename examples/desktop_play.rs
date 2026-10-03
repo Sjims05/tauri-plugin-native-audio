@@ -70,7 +70,7 @@ fn play(files: Vec<std::path::PathBuf>) -> Result<(), String> {
     use tauri_plugin_native_audio::desktop::engine::Engine;
 
     let (first, next) = in_order(&files);
-    let engine = Engine::new(next)?;
+    let engine = Engine::new(next, None)?;
     println!("output: {} Hz, {} channels", engine.sample_rate, engine.channels);
     // NATIVE_AUDIO_TEST_VOLUME=0 plays silently (the output still runs, so gaps are still counted).
     if let Some(volume) = std::env::var("NATIVE_AUDIO_TEST_VOLUME").ok().and_then(|v| v.parse::<f32>().ok()) {
@@ -166,7 +166,7 @@ fn raw(out: std::path::PathBuf, rate: u32, channels: usize, files: Vec<std::path
     let mut pipeline = Pipeline::new(first, 0.0, next, rate, channels, 0);
     let mut frames = 0u64;
     loop {
-        match pipeline.next() {
+        match pipeline.next_step() {
             Step::Samples(samples) => {
                 frames += (samples.len() / channels) as u64;
                 for sample in samples {
