@@ -79,13 +79,28 @@ struct Config {
 }
 
 fn main() {
-    tauri_plugin::Builder::new(COMMANDS)
-        .android_path("android")
-        .ios_path("ios")
-        .build();
+    // The platforms the app chose (Cargo features, see Cargo.toml).
+    let mobile = std::env::var_os("CARGO_FEATURE_MOBILE").is_some();
+    let desktop = std::env::var_os("CARGO_FEATURE_DESKTOP").is_some();
+    if !mobile && !desktop {
+        panic!(
+            "tauri-plugin-native-audio: no platform enabled. Enable the `mobile` feature, the `desktop` feature, or both (the default)."
+        );
+    }
+
+    let mut builder = tauri_plugin::Builder::new(COMMANDS);
+    if mobile {
+        builder = builder.android_path("android").ios_path("ios");
+    }
+    builder.build();
 
     let config = tauri_plugin::plugin_config::<Config>("native-audio").unwrap_or_default();
-    update_car_manifest_entries(config.car_support);
+    if config.car_support && !mobile {
+        panic!(
+            "tauri-plugin-native-audio: `carSupport` is on in tauri.conf.json, but the `mobile` feature is off. Android Auto needs the Android player: enable `mobile`, or turn carSupport off."
+        );
+    }
+    update_car_manifest_entries(config.car_support && mobile);
 }
 
 fn update_car_manifest_entries(car_support: bool) {

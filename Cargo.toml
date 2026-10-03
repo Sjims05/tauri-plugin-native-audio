@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.77.2"
 build = "build.rs"
 links = "tauri-plugin-native-audio"
-description = "Native mobile audio playback plugin for Tauri"
+description = "Native audio playback plugin for Tauri: Android (Media3), iOS (AVPlayer) and desktop (gapless Rust engine)"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/uvarov-frontend/tauri-plugin-native-audio"
 homepage = "https://github.com/uvarov-frontend/tauri-plugin-native-audio"
@@ -17,9 +17,26 @@ categories = ["multimedia::audio"]
 name = "tauri_plugin_native_audio"
 path = "src/lib.rs"
 
+[features]
+# Platforms to build for. An app that only targets one can turn the other off, so it isn't compiled:
+# default-features = false, features = ["desktop"] (or ["mobile"]).
+default = ["mobile", "desktop"]
+# Android (Media3) and iOS (AVPlayer).
+mobile = []
+# Windows, macOS, Linux: a gapless Rust player (symphonia decoding, cpal output).
+desktop = ["dep:symphonia", "dep:cpal", "dep:rubato", "dep:rtrb"]
+
 [dependencies]
 tauri = { version = "2.10.2", features = [] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The desktop player, only for desktop targets and only with the `desktop` feature.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+symphonia = { version = "0.5", optional = true, default-features = false, features = ["mp3", "flac", "aac", "isomp4", "alac", "wav", "pcm", "ogg", "vorbis", "opt-simd"] }
+cpal = { version = "0.15", optional = true }
+rubato = { version = "0.16", optional = true }
+rtrb = { version = "0.3", optional = true }
 
 [build-dependencies]
 tauri-plugin = { version = "2.5.3", features = ["build"] }
