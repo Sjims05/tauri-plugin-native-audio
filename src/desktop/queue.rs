@@ -223,14 +223,15 @@ impl Queue {
         self.order = order_remove(&self.order, index);
     }
 
-    /// Moves the list entry at `from` to `to`; the play order stays the same.
+    /// Moves the list entry at `from` to `to`. Without shuffle the play order is the list, so it
+    /// changes too; with shuffle on it stays the same (only the list position changes).
     pub fn move_entry(&mut self, from: usize, to: usize) -> bool {
         if from >= self.entries.len() || to >= self.entries.len() {
             return false;
         }
         let entry = self.entries.remove(from);
         self.entries.insert(to, entry);
-        self.order = order_move(&self.order, from, to);
+        self.order = if self.shuffle { order_move(&self.order, from, to) } else { (0..self.entries.len()).collect() };
         true
     }
 }
@@ -603,8 +604,19 @@ mod tests {
     }
 
     #[test]
-    fn edits_keep_keys_and_play_order() {
+    fn moving_without_shuffle_changes_what_plays_next() {
         let mut q = queue(&["A", "B", "C", "D"]);
+        let [a, d] = [q.key_at(0).unwrap(), q.key_at(3).unwrap()];
+        assert!(q.move_entry(3, 1)); // A D B C
+        assert_eq!(titles(&q), ["A", "D", "B", "C"]);
+        assert_eq!(q.peek_next(a, true), Some(d));
+        assert!(!q.move_entry(0, 4));
+    }
+
+    #[test]
+    fn with_shuffle_edits_keep_keys_and_play_order() {
+        let mut q = queue(&["A", "B", "C", "D"]);
+        q.shuffle = true; // the list order as the "shuffled" order, to keep the test readable
         let c = q.key_at(2).unwrap();
         assert!(q.move_entry(2, 0)); // C A B D
         assert_eq!(q.index_of(c), Some(0));

@@ -151,7 +151,7 @@ impl Pipeline {
                     return;
                 }
                 Err(e) => {
-                    self.steps.push_back(Step::Error(format!("{}: {e}", track.path.display())));
+                    self.steps.push_back(Step::Error(e));
                     self.failed.insert(track.key);
                     match self.following(track.key) {
                         Some(next) => {

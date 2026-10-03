@@ -31,6 +31,8 @@ pub struct Status {
     pub upcoming: Option<u64>,
     /// Decoding reached the end: nothing follows what's prepared.
     pub end_prepared: bool,
+    /// A start() / stop() isn't done yet (the track is being opened).
+    pub loading: bool,
     pub position_secs: f64,
     pub duration_secs: Option<f64>,
     pub playing: bool,
@@ -42,8 +44,9 @@ pub struct Status {
 }
 
 enum Command {
-    Start { track: Track, position: f64 },
-    Stop,
+    /// `id`: confirmed in Shared::done once the track is open (or nothing could be played).
+    Start { track: Track, position: f64, id: u64 },
+    Stop { id: u64 },
     Shutdown,
 }
 
@@ -74,6 +77,9 @@ struct Shared {
     flush_ack: AtomicU64,
     markers: Mutex<VecDeque<Marker>>,
     error: Mutex<Option<String>>,
+    /// The last start() / stop() asked for, and the last one done.
+    requested: AtomicU64,
+    done: AtomicU64,
 }
 
 pub struct Engine {
@@ -101,6 +107,8 @@ impl Engine {
             flush_ack: AtomicU64::new(0),
             markers: Mutex::new(VecDeque::new()),
             error: Mutex::new(None),
+            requested: AtomicU64::new(0),
+            done: AtomicU64::new(0),
         });
 
         // The device's own rate and channels; tracks are converted to it.
@@ -154,12 +162,20 @@ impl Engine {
     /// Plays `track` from `position` seconds on (once playing: play() / pause() don't change),
     /// dropping whatever was prepared.
     pub fn start(&self, track: Track, position: f64) {
-        let _ = self.commands.send(Command::Start { track, position });
+        let id = self.shared.requested.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ = self.commands.send(Command::Start { track, position, id });
     }
 
     /// Drops everything: nothing loaded.
     pub fn stop(&self) {
-        let _ = self.commands.send(Command::Stop);
+        let id = self.shared.requested.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ = self.commands.send(Command::Stop { id });
+    }
+
+    /// Waits for the engine to finish the start() / stop() calls made so far, without holding on
+    /// to the engine (so the caller can let go of its locks while waiting).
+    pub fn waiter(&self) -> Waiter {
+        Waiter(self.shared.clone())
     }
 
     /// Seconds into the current track.
@@ -203,6 +219,7 @@ impl Engine {
             key: current.as_ref().map(|m| m.track.key),
             upcoming,
             end_prepared: self.shared.end_prepared.load(Ordering::SeqCst),
+            loading: self.shared.done.load(Ordering::SeqCst) < self.shared.requested.load(Ordering::SeqCst),
             position_secs: current
                 .as_ref()
                 .map_or(0.0, |m| m.offset_secs + (played - m.start_frame) as f64 / self.sample_rate as f64),
@@ -212,6 +229,23 @@ impl Engine {
             underrun_frames: self.shared.underrun_frames.load(Ordering::SeqCst),
             error: self.shared.error.lock().unwrap().clone(),
         }
+    }
+}
+
+pub struct Waiter(Arc<Shared>);
+
+impl Waiter {
+    /// Returns whether the engine caught up within `timeout`.
+    pub fn wait(&self, timeout: Duration) -> bool {
+        let target = self.0.requested.load(Ordering::SeqCst);
+        let deadline = Instant::now() + timeout;
+        while self.0.done.load(Ordering::SeqCst) < target {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        true
     }
 }
 
@@ -309,6 +343,8 @@ struct Feeder {
     pending: VecDeque<f32>,
     /// Output frames written to the ring buffer so far (same clock as Shared::frames_played).
     frames_written: u64,
+    /// The start() being opened, confirmed at its first track start (or end).
+    starting: Option<u64>,
 }
 
 impl Feeder {
@@ -322,6 +358,7 @@ impl Feeder {
             pipeline: None,
             pending: VecDeque::new(),
             frames_written: 0,
+            starting: None,
         }
     }
 
@@ -340,8 +377,9 @@ impl Feeder {
             };
             match command {
                 Some(Command::Shutdown) => return,
-                Some(Command::Start { track, position }) => {
+                Some(Command::Start { track, position, id }) => {
                     self.reset();
+                    self.starting = Some(id);
                     self.pipeline = Some(Pipeline::new(
                         track,
                         position,
@@ -351,11 +389,12 @@ impl Feeder {
                         self.frames_written,
                     ));
                 }
-                Some(Command::Stop) => {
+                Some(Command::Stop { id }) => {
                     self.reset();
                     self.shared.end_prepared.store(true, Ordering::SeqCst);
                     self.shared.end_frame.store(self.frames_written, Ordering::SeqCst);
                     self.shared.ended.store(true, Ordering::SeqCst);
+                    self.shared.done.store(id, Ordering::SeqCst);
                 }
                 None => {}
             }
@@ -378,7 +417,16 @@ impl Feeder {
         self.shared.markers.lock().unwrap().clear();
         self.shared.end_prepared.store(false, Ordering::SeqCst);
         self.shared.ended.store(false, Ordering::SeqCst);
+        *self.shared.error.lock().unwrap() = None;
         self.pipeline = None;
+        self.starting = None;
+    }
+
+    /// The start() being opened is done.
+    fn confirm_start(&mut self) {
+        if let Some(id) = self.starting.take() {
+            self.shared.done.store(id, Ordering::SeqCst);
+        }
     }
 
     /// Moves audio from the pipeline into the ring buffer. Returns false when there was nothing to
@@ -397,16 +445,20 @@ impl Feeder {
                 self.pending.extend(samples);
                 self.write_pending();
             }
-            Step::TrackStart(start) => self.shared.markers.lock().unwrap().push_back(Marker {
-                start_frame: start.output_frame,
-                track: start.track,
-                offset_secs: start.offset_secs,
-                duration_secs: start.duration_secs,
-            }),
+            Step::TrackStart(start) => {
+                self.shared.markers.lock().unwrap().push_back(Marker {
+                    start_frame: start.output_frame,
+                    track: start.track,
+                    offset_secs: start.offset_secs,
+                    duration_secs: start.duration_secs,
+                });
+                self.confirm_start();
+            }
             Step::Error(e) => *self.shared.error.lock().unwrap() = Some(e),
             Step::End => {
                 self.pipeline = None;
                 self.shared.end_prepared.store(true, Ordering::SeqCst);
+                self.confirm_start();
                 self.mark_end_when_drained();
             }
         }

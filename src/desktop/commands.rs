@@ -100,8 +100,14 @@ impl DesktopAudio {
         let Some(engine) = inner.engine.as_ref() else { return state.to_json() };
         let status = engine.status();
         let index = status.key.and_then(|key| queue.index_of(key));
-        state.status = if status.ended && !queue.entries().is_empty() {
+        let loaded = queue.len() > 0;
+        // A track that can't be played is skipped; "error" when that left nothing to play.
+        state.status = if status.ended && status.error.is_some() {
+            "error"
+        } else if status.ended && loaded {
             "ended"
+        } else if status.loading && loaded {
+            "loading"
         } else if status.playing && index.is_some() {
             "playing"
         } else {
@@ -256,9 +262,13 @@ fn to_path(src: &str) -> PathBuf {
     PathBuf::from(String::from_utf8_lossy(&out).into_owned())
 }
 
-/// The state, after giving the engine a moment to act on a command (it opens tracks on its own thread).
+/// The state once the engine has opened what a command asked for (on its own thread), so it shows
+/// the new track. Waits without holding the locks: opening the track may need the queue.
 fn settled(audio: &DesktopAudio) -> Value {
-    thread::sleep(Duration::from_millis(30));
+    let waiter = audio.inner.lock().unwrap().engine.as_ref().map(Engine::waiter);
+    if let Some(waiter) = waiter {
+        waiter.wait(Duration::from_millis(500));
+    }
     audio.state()
 }
 
@@ -326,6 +336,9 @@ pub fn set_queue(
 #[tauri::command]
 pub fn play(audio: State<'_, DesktopAudio>) -> CommandResult<Value> {
     audio.with_engine(|engine, queue| {
+        if queue.len() == 0 {
+            return;
+        }
         // Finished: play the queue again from the start of the play order.
         if engine.status().ended {
             start_key(engine, queue, queue.order().first().and_then(|&i| queue.key_at(i)));
@@ -343,7 +356,11 @@ pub fn pause(audio: State<'_, DesktopAudio>) -> CommandResult<Value> {
 
 #[tauri::command]
 pub fn seek_to(audio: State<'_, DesktopAudio>, position: f64) -> CommandResult<Value> {
-    audio.with_engine(|engine, _| engine.seek(position.max(0.0)))?;
+    audio.with_engine(|engine, _| {
+        // Past the end: the end, from where it moves on as usual.
+        let last = engine.status().duration_secs.filter(|d| *d > 0.0).map_or(f64::MAX, |d| (d - 0.01).max(0.0));
+        engine.seek(position.clamp(0.0, last));
+    })?;
     Ok(settled(&audio))
 }
 
@@ -438,11 +455,15 @@ pub fn remove_from_queue(audio: State<'_, DesktopAudio>, index: usize) -> Comman
 
 #[tauri::command]
 pub fn move_in_queue(audio: State<'_, DesktopAudio>, from: usize, to: usize) -> CommandResult<Value> {
-    // The play order stays the same, so what plays next doesn't change.
-    if !audio.queue.lock().unwrap().move_entry(from, to) {
-        return Err(format!("can't move queue item {from} to {to}"));
-    }
-    Ok(audio.state())
+    audio.with_engine(|engine, queue| {
+        if !queue.move_entry(from, to) {
+            return Err(format!("can't move queue item {from} to {to}"));
+        }
+        // Without shuffle the play order changed with the list.
+        resync(engine, queue);
+        Ok(())
+    })??;
+    Ok(settled(&audio))
 }
 
 #[tauri::command]
