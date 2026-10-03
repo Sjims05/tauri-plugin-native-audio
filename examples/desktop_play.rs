@@ -53,18 +53,30 @@ fn main() {
     }
 }
 
+/// The files in order, keyed by their index: the first one, and what follows each.
+#[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+fn in_order(files: &[std::path::PathBuf]) -> (tauri_plugin_native_audio::desktop::pipeline::Track, tauri_plugin_native_audio::desktop::pipeline::NextTrack) {
+    use tauri_plugin_native_audio::desktop::pipeline::Track;
+    let track = |key: u64| files.get(key as usize).map(|path| Track { key, path: path.clone() });
+    let first = track(0).expect("at least one file");
+    let files = files.to_vec();
+    let next = move |key: u64| files.get(key as usize + 1).map(|path| Track { key: key + 1, path: path.clone() });
+    (first, std::sync::Arc::new(next))
+}
+
 #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
 fn play(files: Vec<std::path::PathBuf>) -> Result<(), String> {
     use std::time::Duration;
     use tauri_plugin_native_audio::desktop::engine::Engine;
 
-    let engine = Engine::new()?;
+    let (first, next) = in_order(&files);
+    let engine = Engine::new(next)?;
     println!("output: {} Hz, {} channels", engine.sample_rate, engine.channels);
     // NATIVE_AUDIO_TEST_VOLUME=0 plays silently (the output still runs, so gaps are still counted).
     if let Some(volume) = std::env::var("NATIVE_AUDIO_TEST_VOLUME").ok().and_then(|v| v.parse::<f32>().ok()) {
         engine.set_volume(volume);
     }
-    engine.load(files.clone(), 0, 0.0);
+    engine.start(first, 0.0);
     engine.play();
     let mut last_index = None;
     let mut underruns_at_change = 0;
@@ -74,8 +86,8 @@ fn play(files: Vec<std::path::PathBuf>) -> Result<(), String> {
         if let Some(e) = &status.error {
             println!("  ! {e}");
         }
-        if status.index != last_index {
-            if let Some(index) = status.index {
+        if status.key != last_index {
+            if let Some(index) = status.key.map(|k| k as usize) {
                 let name = files[index].file_name().unwrap_or_default().to_string_lossy();
                 println!(
                     "track {}: {name} ({:.0} s) | silence frames so far: {}{}",
@@ -90,7 +102,7 @@ fn play(files: Vec<std::path::PathBuf>) -> Result<(), String> {
                 );
             }
             underruns_at_change = status.underrun_frames;
-            last_index = status.index;
+            last_index = status.key;
         }
         if status.ended {
             println!("done | silence frames in total: {}", status.underrun_frames);
@@ -150,7 +162,8 @@ fn raw(out: std::path::PathBuf, rate: u32, channels: usize, files: Vec<std::path
     use tauri_plugin_native_audio::desktop::pipeline::{Pipeline, Step};
 
     let mut writer = std::io::BufWriter::new(std::fs::File::create(&out).map_err(|e| e.to_string())?);
-    let mut pipeline = Pipeline::new(files.clone(), 0, 0.0, rate, channels, 0);
+    let (first, next) = in_order(&files);
+    let mut pipeline = Pipeline::new(first, 0.0, next, rate, channels, 0);
     let mut frames = 0u64;
     loop {
         match pipeline.next() {
@@ -162,7 +175,7 @@ fn raw(out: std::path::PathBuf, rate: u32, channels: usize, files: Vec<std::path
             }
             Step::TrackStart(start) => println!(
                 "track {} starts at output frame {} (written so far: {frames})",
-                start.index + 1,
+                start.track.key + 1,
                 start.output_frame
             ),
             Step::Error(e) => println!("  ! {e}"),

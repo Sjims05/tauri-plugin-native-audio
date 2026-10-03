@@ -1,12 +1,12 @@
 //! Gapless playback on desktop.
 //!
 //! One output stream (cpal) runs for the whole session. A feeder thread decodes the tracks in play
-//! order into a ring buffer, opening the next track while the current one is still playing, so the
-//! next track's first sample follows the previous track's last one with nothing in between.
+//! order into a ring buffer, opening the next track (asked from the queue, see NextTrack) while the
+//! current one is still playing, so the next track's first sample follows the previous track's last
+//! one with nothing in between.
 //! Pausing outputs silence instead of stopping the stream, so resuming has no startup delay either.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -17,7 +17,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SizedSample};
 use rtrb::{Consumer, Producer, RingBuffer};
 
-use super::pipeline::{Pipeline, Step};
+use super::pipeline::{NextTrack, Pipeline, Step, Track};
 
 /// Seconds of audio the feeder keeps ready ahead of the output.
 const BUFFER_SECONDS: f32 = 2.0;
@@ -25,8 +25,12 @@ const BUFFER_SECONDS: f32 = 2.0;
 /// Where playback is.
 #[derive(Debug, Clone)]
 pub struct Status {
-    /// Index into the loaded tracks, None when nothing is loaded.
-    pub index: Option<usize>,
+    /// The playing track's key, None when nothing is loaded.
+    pub key: Option<u64>,
+    /// The track already prepared to follow it (decoding moves on a couple of seconds early), if any.
+    pub upcoming: Option<u64>,
+    /// Decoding reached the end: nothing follows what's prepared.
+    pub end_prepared: bool,
     pub position_secs: f64,
     pub duration_secs: Option<f64>,
     pub playing: bool,
@@ -38,17 +42,17 @@ pub struct Status {
 }
 
 enum Command {
-    Load { tracks: Vec<PathBuf>, index: usize, position: f64 },
-    SkipTo { index: usize, position: f64 },
+    Start { track: Track, position: f64 },
+    Stop,
     Shutdown,
 }
 
-/// A track start in the output stream: from output frame `start_frame` on, track `index` plays,
+/// A track start in the output stream: from output frame `start_frame` on, `track` plays,
 /// beginning `offset_secs` into it.
 #[derive(Clone)]
 struct Marker {
     start_frame: u64,
-    index: usize,
+    track: Track,
     offset_secs: f64,
     duration_secs: Option<f64>,
 }
@@ -59,7 +63,9 @@ struct Shared {
     /// Output frames played (popped from the buffer) so far.
     frames_played: AtomicU64,
     underrun_frames: AtomicU64,
-    /// No more audio is coming (end of the last track) ...
+    /// Decoding reached the end (nothing follows) ...
+    end_prepared: AtomicBool,
+    /// ... and its audio is all in the buffer ...
     ended: AtomicBool,
     /// ... and this is the output frame where it stops.
     end_frame: AtomicU64,
@@ -81,13 +87,14 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Opens the default output device.
-    pub fn new() -> Result<Self, String> {
+    /// Opens the default output device. `next_track` tells what follows each track.
+    pub fn new(next_track: NextTrack) -> Result<Self, String> {
         let shared = Arc::new(Shared {
             playing: AtomicBool::new(false),
             volume_bits: AtomicU32::new(1.0f32.to_bits()),
             frames_played: AtomicU64::new(0),
             underrun_frames: AtomicU64::new(0),
+            end_prepared: AtomicBool::new(true),
             ended: AtomicBool::new(true),
             end_frame: AtomicU64::new(0),
             flush_gen: AtomicU64::new(0),
@@ -130,7 +137,7 @@ impl Engine {
         let feeder_shared = shared.clone();
         let feeder_thread = thread::Builder::new()
             .name("native-audio-feeder".into())
-            .spawn(move || Feeder::new(producer, feeder_shared, sample_rate, channels).run(command_rx))
+            .spawn(move || Feeder::new(producer, feeder_shared, sample_rate, channels, next_track).run(command_rx))
             .map_err(|e| e.to_string())?;
 
         Ok(Self {
@@ -144,20 +151,29 @@ impl Engine {
         })
     }
 
-    /// Loads tracks in play order and prepares `index` at `position` seconds (paused until play()).
-    pub fn load(&self, tracks: Vec<PathBuf>, index: usize, position: f64) {
-        let _ = self.commands.send(Command::Load { tracks, index, position });
+    /// Plays `track` from `position` seconds on (once playing: play() / pause() don't change),
+    /// dropping whatever was prepared.
+    pub fn start(&self, track: Track, position: f64) {
+        let _ = self.commands.send(Command::Start { track, position });
     }
 
-    pub fn skip_to(&self, index: usize) {
-        let _ = self.commands.send(Command::SkipTo { index, position: 0.0 });
+    /// Drops everything: nothing loaded.
+    pub fn stop(&self) {
+        let _ = self.commands.send(Command::Stop);
     }
 
     /// Seconds into the current track.
     pub fn seek(&self, position: f64) {
-        if let Some(index) = self.status().index {
-            let _ = self.commands.send(Command::SkipTo { index, position });
+        if let Some(track) = self.current_track() {
+            self.start(track, position);
         }
+    }
+
+    /// The playing track.
+    pub fn current_track(&self) -> Option<Track> {
+        let played = self.shared.frames_played.load(Ordering::SeqCst);
+        let markers = self.shared.markers.lock().unwrap();
+        markers.iter().take_while(|m| m.start_frame <= played).last().map(|m| m.track.clone())
     }
 
     pub fn play(&self) {
@@ -181,9 +197,12 @@ impl Engine {
             markers.pop_front();
         }
         let current = markers.front().filter(|m| m.start_frame <= played).cloned();
+        let upcoming = markers.iter().find(|m| m.start_frame > played).map(|m| m.track.key);
         let ended = self.shared.ended.load(Ordering::SeqCst) && played >= self.shared.end_frame.load(Ordering::SeqCst);
         Status {
-            index: current.as_ref().map(|m| m.index),
+            key: current.as_ref().map(|m| m.track.key),
+            upcoming,
+            end_prepared: self.shared.end_prepared.load(Ordering::SeqCst),
             position_secs: current
                 .as_ref()
                 .map_or(0.0, |m| m.offset_secs + (played - m.start_frame) as f64 / self.sample_rate as f64),
@@ -284,7 +303,7 @@ struct Feeder {
     shared: Arc<Shared>,
     sample_rate: u32,
     channels: usize,
-    tracks: Vec<PathBuf>,
+    next_track: NextTrack,
     pipeline: Option<Pipeline>,
     /// Converted samples that didn't fit in the ring buffer yet.
     pending: VecDeque<f32>,
@@ -293,13 +312,13 @@ struct Feeder {
 }
 
 impl Feeder {
-    fn new(producer: Producer<f32>, shared: Arc<Shared>, sample_rate: u32, channels: usize) -> Self {
+    fn new(producer: Producer<f32>, shared: Arc<Shared>, sample_rate: u32, channels: usize, next_track: NextTrack) -> Self {
         Self {
             producer,
             shared,
             sample_rate,
             channels,
-            tracks: Vec::new(),
+            next_track,
             pipeline: None,
             pending: VecDeque::new(),
             frames_written: 0,
@@ -321,11 +340,23 @@ impl Feeder {
             };
             match command {
                 Some(Command::Shutdown) => return,
-                Some(Command::Load { tracks, index, position }) => {
-                    self.tracks = tracks;
-                    self.start_at(index, position);
+                Some(Command::Start { track, position }) => {
+                    self.reset();
+                    self.pipeline = Some(Pipeline::new(
+                        track,
+                        position,
+                        self.next_track.clone(),
+                        self.sample_rate,
+                        self.channels,
+                        self.frames_written,
+                    ));
                 }
-                Some(Command::SkipTo { index, position }) => self.start_at(index, position),
+                Some(Command::Stop) => {
+                    self.reset();
+                    self.shared.end_prepared.store(true, Ordering::SeqCst);
+                    self.shared.end_frame.store(self.frames_written, Ordering::SeqCst);
+                    self.shared.ended.store(true, Ordering::SeqCst);
+                }
                 None => {}
             }
             if !self.fill() {
@@ -334,8 +365,8 @@ impl Feeder {
         }
     }
 
-    /// Drops everything queued for output and starts track `index` at `position`.
-    fn start_at(&mut self, index: usize, position: f64) {
+    /// Drops everything prepared and queued for output.
+    fn reset(&mut self) {
         let flush = self.shared.flush_gen.fetch_add(1, Ordering::SeqCst) + 1;
         // Wait (briefly) until the output has dropped the old audio, so the frame clocks line up.
         let deadline = Instant::now() + Duration::from_millis(500);
@@ -345,15 +376,9 @@ impl Feeder {
         self.pending.clear();
         self.frames_written = self.shared.frames_played.load(Ordering::SeqCst);
         self.shared.markers.lock().unwrap().clear();
+        self.shared.end_prepared.store(false, Ordering::SeqCst);
         self.shared.ended.store(false, Ordering::SeqCst);
-        self.pipeline = Some(Pipeline::new(
-            self.tracks.clone(),
-            index,
-            position,
-            self.sample_rate,
-            self.channels,
-            self.frames_written,
-        ));
+        self.pipeline = None;
     }
 
     /// Moves audio from the pipeline into the ring buffer. Returns false when there was nothing to
@@ -374,13 +399,14 @@ impl Feeder {
             }
             Step::TrackStart(start) => self.shared.markers.lock().unwrap().push_back(Marker {
                 start_frame: start.output_frame,
-                index: start.index,
+                track: start.track,
                 offset_secs: start.offset_secs,
                 duration_secs: start.duration_secs,
             }),
             Step::Error(e) => *self.shared.error.lock().unwrap() = Some(e),
             Step::End => {
                 self.pipeline = None;
+                self.shared.end_prepared.store(true, Ordering::SeqCst);
                 self.mark_end_when_drained();
             }
         }
@@ -413,6 +439,8 @@ impl Feeder {
                 thread::sleep(Duration::from_millis(5));
             }
         }
+        // Ended once the output has played up to here, not when the last audio is buffered.
+        self.shared.end_frame.store(self.frames_written, Ordering::SeqCst);
         self.shared.ended.store(true, Ordering::SeqCst);
     }
 }

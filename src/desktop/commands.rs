@@ -1,6 +1,6 @@
 //! The plugin's commands on desktop, with the same names, arguments and results as on Android, so
 //! the JavaScript API works unchanged. Android-only features (the Android Auto library, car buttons,
-//! options, tracked lists, ...) are accepted and do nothing yet.
+//! tracked lists, ...) are accepted and do nothing yet.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -14,6 +14,8 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 use super::engine::Engine;
+use super::pipeline::{NextTrack, Track};
+use super::queue::{Queue, Repeat};
 
 const STATE_EVENT: &str = "native_audio_state";
 
@@ -35,23 +37,28 @@ pub struct Item {
 #[derive(Default)]
 struct Inner {
     engine: Option<Engine>,
-    items: Vec<Item>,
     listeners: HashMap<String, Vec<Channel<Value>>>,
     emitter_started: bool,
+    /// The playing entry when the emit loop last looked, to notice track changes.
+    last_key: Option<u64>,
 }
 
-/// The desktop player, managed as Tauri state.
+/// The desktop player, managed as Tauri state. Locks: `inner` before `queue`, never the other way
+/// round. The engine's feeder thread takes only `queue` (to ask what follows a track).
 #[derive(Clone, Default)]
-pub struct DesktopAudio(Arc<Mutex<Inner>>);
+pub struct DesktopAudio {
+    inner: Arc<Mutex<Inner>>,
+    queue: Arc<Mutex<Queue>>,
+}
 
 type CommandResult<T> = Result<T, String>;
 
 impl DesktopAudio {
-    /// The engine, opening the output device the first time.
-    fn with_engine<T>(&self, f: impl FnOnce(&Engine, &mut Vec<Item>) -> T) -> CommandResult<T> {
-        let mut inner = self.0.lock().unwrap();
+    /// The engine and the queue, opening the output device the first time.
+    fn with_engine<T>(&self, f: impl FnOnce(&Engine, &mut Queue) -> T) -> CommandResult<T> {
+        let mut inner = self.inner.lock().unwrap();
         if inner.engine.is_none() {
-            inner.engine = Some(Engine::new()?);
+            inner.engine = Some(Engine::new(self.next_track())?);
         }
         if !inner.emitter_started {
             inner.emitter_started = true;
@@ -61,45 +68,76 @@ impl DesktopAudio {
                 .spawn(move || me.emit_loop())
                 .map_err(|e| e.to_string())?;
         }
-        let Inner { engine, items, .. } = &mut *inner;
-        Ok(f(engine.as_ref().unwrap(), items))
+        let mut queue = self.queue.lock().unwrap();
+        Ok(f(inner.engine.as_ref().unwrap(), &mut queue))
+    }
+
+    /// What the engine plays after each track: the queue's next entry (repeat one: the same again).
+    fn next_track(&self) -> NextTrack {
+        let queue = self.queue.clone();
+        Arc::new(move |key| {
+            let queue = queue.lock().unwrap();
+            queue.peek_next(key, true).and_then(|next| track_of(&queue, next))
+        })
     }
 
     /// The state in the shape of the JavaScript API's NativeAudioState.
     fn state(&self) -> Value {
-        let inner = self.0.lock().unwrap();
-        let length = inner.items.len();
-        let Some(engine) = inner.engine.as_ref() else {
-            return state_json("idle", 0.0, 0.0, false, -1, length, None, None);
+        let inner = self.inner.lock().unwrap();
+        let queue = self.queue.lock().unwrap();
+        let mut state = PlayerState {
+            status: "idle",
+            current_time: 0.0,
+            duration: 0.0,
+            is_playing: false,
+            queue_index: -1,
+            queue_length: queue.len(),
+            current_id: None,
+            shuffle: queue.shuffle,
+            repeat: queue.repeat,
+            error: None,
         };
+        let Some(engine) = inner.engine.as_ref() else { return state.to_json() };
         let status = engine.status();
-        let index = status.index.map_or(-1, |i| i as i64);
-        let current_id = status.index.and_then(|i| inner.items.get(i)).and_then(|item| item.id);
-        let kind = if status.ended && length > 0 {
+        let index = status.key.and_then(|key| queue.index_of(key));
+        state.status = if status.ended && !queue.entries().is_empty() {
             "ended"
-        } else if status.playing && status.index.is_some() {
+        } else if status.playing && index.is_some() {
             "playing"
         } else {
             "idle"
         };
-        state_json(
-            kind,
-            status.position_secs,
-            status.duration_secs.unwrap_or(0.0),
-            status.playing && !status.ended,
-            index,
-            length,
-            current_id,
-            status.error,
-        )
+        state.current_time = status.position_secs;
+        state.duration = status.duration_secs.unwrap_or(0.0);
+        state.is_playing = status.playing && !status.ended && index.is_some();
+        state.queue_index = index.map_or(-1, |i| i as i64);
+        state.current_id = index.and_then(|i| queue.entries()[i].item.id);
+        state.error = status.error;
+        state.to_json()
     }
 
     fn emit(&self, event: &str, payload: &Value) {
-        let mut inner = self.0.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap();
         if let Some(channels) = inner.listeners.get_mut(event) {
             // A channel whose page is gone fails to send: drop it.
             channels.retain(|channel| channel.send(payload.clone()).is_ok());
         }
+    }
+
+    /// A new track started playing (on its own, or skipped to): the queue may start over (repeat all).
+    fn check_transition(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(engine) = inner.engine.as_ref() else { return };
+        let key = engine.status().key;
+        if key == inner.last_key {
+            return;
+        }
+        if let (Some(from), Some(to)) = (inner.last_key, key) {
+            let mut queue = self.queue.lock().unwrap();
+            queue.on_transition(from, to);
+            resync(engine, &queue);
+        }
+        inner.last_key = key;
     }
 
     /// Sends the state to listeners when it changes, and the position regularly while playing.
@@ -108,10 +146,17 @@ impl DesktopAudio {
         let mut last_sent = Instant::now();
         loop {
             thread::sleep(Duration::from_millis(100));
+            self.check_transition();
             let state = self.state();
             let key = format!(
-                "{}|{}|{}|{}|{}",
-                state["status"], state["queueIndex"], state["isPlaying"], state["queueLength"], state["error"]
+                "{}|{}|{}|{}|{}|{}|{}",
+                state["status"],
+                state["queueIndex"],
+                state["isPlaying"],
+                state["queueLength"],
+                state["shuffle"],
+                state["repeatMode"],
+                state["error"]
             );
             let playing = state["isPlaying"].as_bool() == Some(true);
             if key != last_key || (playing && last_sent.elapsed() >= Duration::from_millis(250)) {
@@ -123,38 +168,70 @@ impl DesktopAudio {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn state_json(
-    status: &str,
+/// The JavaScript API's NativeAudioState.
+struct PlayerState {
+    status: &'static str,
     current_time: f64,
     duration: f64,
     is_playing: bool,
     queue_index: i64,
     queue_length: usize,
     current_id: Option<i64>,
+    shuffle: bool,
+    repeat: Repeat,
     error: Option<String>,
-) -> Value {
-    let mut state = json!({
-        "status": status,
-        "currentTime": current_time,
-        "duration": duration,
-        "isPlaying": is_playing,
-        "buffering": false,
-        "rate": 1.0,
-        "queueIndex": queue_index,
-        "queueLength": queue_length,
-        "shuffle": false,
-        "repeatMode": "off",
-        "sleepTimerEndsAtMs": null,
-        "sleepTimerEndOfTrack": false,
-    });
-    if let Some(id) = current_id {
-        state["currentId"] = json!(id);
+}
+
+impl PlayerState {
+    fn to_json(self) -> Value {
+        let mut state = json!({
+            "status": self.status,
+            "currentTime": self.current_time,
+            "duration": self.duration,
+            "isPlaying": self.is_playing,
+            "buffering": false,
+            "rate": 1.0,
+            "queueIndex": self.queue_index,
+            "queueLength": self.queue_length,
+            "shuffle": self.shuffle,
+            "repeatMode": self.repeat.name(),
+            "sleepTimerEndsAtMs": null,
+            "sleepTimerEndOfTrack": false,
+        });
+        if let Some(id) = self.current_id {
+            state["currentId"] = json!(id);
+        }
+        if let Some(error) = self.error {
+            state["error"] = json!(error);
+        }
+        state
     }
-    if let Some(error) = error {
-        state["error"] = json!(error);
+}
+
+/// The queue entry `key` as a track for the engine.
+fn track_of(queue: &Queue, key: u64) -> Option<Track> {
+    queue.entry(key).map(|entry| Track { key, path: to_path(&entry.item.src) })
+}
+
+/// After the queue changed: if the engine already prepared a different track to follow the playing
+/// one (it does so a couple of seconds before the end), plays on from the same spot so the right
+/// one follows. Otherwise there's nothing to do: the engine asks the queue when it gets there.
+fn resync(engine: &Engine, queue: &Queue) {
+    let status = engine.status();
+    let Some(playing) = status.key else { return };
+    if status.ended {
+        return;
     }
-    state
+    let prepared = match (status.upcoming, status.end_prepared) {
+        (Some(upcoming), _) => Some(upcoming),
+        (None, true) => None,
+        (None, false) => return,
+    };
+    if queue.peek_next(playing, true) != prepared {
+        if let Some(track) = track_of(queue, playing) {
+            engine.start(track, status.position_secs);
+        }
+    }
 }
 
 /// A local path from what the app passed: a plain path, or a file:// URL.
@@ -179,16 +256,25 @@ fn to_path(src: &str) -> PathBuf {
     PathBuf::from(String::from_utf8_lossy(&out).into_owned())
 }
 
-fn load(audio: &DesktopAudio, items: Vec<Item>, start_index: usize, start_position: f64) -> CommandResult<Value> {
-    audio.with_engine(|engine, queue| {
-        let paths = items.iter().map(|item| to_path(&item.src)).collect();
-        let index = start_index.min(items.len().saturating_sub(1));
-        *queue = items;
-        engine.load(paths, index, start_position.max(0.0));
-    })?;
-    // The engine opens the track on its own thread: give it a moment so the state shows it.
+/// The state, after giving the engine a moment to act on a command (it opens tracks on its own thread).
+fn settled(audio: &DesktopAudio) -> Value {
     thread::sleep(Duration::from_millis(30));
-    Ok(audio.state())
+    audio.state()
+}
+
+fn load(audio: &DesktopAudio, items: Vec<Item>, start_index: usize, start_position: f64) -> CommandResult<Value> {
+    audio.with_engine(|engine, queue| match queue.set(items, start_index).and_then(|key| track_of(queue, key)) {
+        Some(track) => engine.start(track, start_position.max(0.0)),
+        None => engine.stop(),
+    })?;
+    Ok(settled(audio))
+}
+
+/// Starts the queue entry `key` from the beginning.
+fn start_key(engine: &Engine, queue: &Queue, key: Option<u64>) {
+    if let Some(track) = key.and_then(|key| track_of(queue, key)) {
+        engine.start(track, 0.0);
+    }
 }
 
 fn not_yet(feature: &str) -> String {
@@ -205,12 +291,12 @@ pub fn initialize(audio: State<'_, DesktopAudio>) -> CommandResult<Value> {
 
 #[tauri::command]
 pub fn register_listener(audio: State<'_, DesktopAudio>, event: String, handler: Channel<Value>) {
-    audio.0.lock().unwrap().listeners.entry(event).or_default().push(handler);
+    audio.inner.lock().unwrap().listeners.entry(event).or_default().push(handler);
 }
 
 #[tauri::command]
 pub fn remove_listener(audio: State<'_, DesktopAudio>, event: String, channel_id: u32) {
-    if let Some(channels) = audio.0.lock().unwrap().listeners.get_mut(&event) {
+    if let Some(channels) = audio.inner.lock().unwrap().listeners.get_mut(&event) {
         channels.retain(|channel| channel.id() != channel_id);
     }
 }
@@ -239,14 +325,14 @@ pub fn set_queue(
 
 #[tauri::command]
 pub fn play(audio: State<'_, DesktopAudio>) -> CommandResult<Value> {
-    audio.with_engine(|engine, _| {
-        // Finished: play the queue again from the start.
+    audio.with_engine(|engine, queue| {
+        // Finished: play the queue again from the start of the play order.
         if engine.status().ended {
-            engine.skip_to(0);
+            start_key(engine, queue, queue.order().first().and_then(|&i| queue.key_at(i)));
         }
         engine.play();
     })?;
-    Ok(audio.state())
+    Ok(settled(&audio))
 }
 
 #[tauri::command]
@@ -257,47 +343,105 @@ pub fn pause(audio: State<'_, DesktopAudio>) -> CommandResult<Value> {
 
 #[tauri::command]
 pub fn seek_to(audio: State<'_, DesktopAudio>, position: f64) -> CommandResult<Value> {
-    audio.with_engine(|engine, _| engine.seek(position))?;
-    thread::sleep(Duration::from_millis(30));
-    Ok(audio.state())
+    audio.with_engine(|engine, _| engine.seek(position.max(0.0)))?;
+    Ok(settled(&audio))
 }
 
 #[tauri::command]
 pub fn next(audio: State<'_, DesktopAudio>) -> CommandResult<Value> {
-    audio.with_engine(|engine, items| {
-        if let Some(index) = engine.status().index {
-            if index + 1 < items.len() {
-                engine.skip_to(index + 1);
-            }
+    audio.with_engine(|engine, queue| {
+        if let Some(key) = engine.status().key {
+            start_key(engine, queue, queue.peek_next(key, false));
         }
     })?;
-    thread::sleep(Duration::from_millis(30));
-    Ok(audio.state())
+    Ok(settled(&audio))
 }
 
 #[tauri::command]
 pub fn previous(audio: State<'_, DesktopAudio>) -> CommandResult<Value> {
-    audio.with_engine(|engine, _| {
+    audio.with_engine(|engine, queue| {
         let status = engine.status();
-        match status.index {
-            // Like on Android: past the first 3 seconds, previous restarts the track.
-            Some(index) if status.position_secs <= 3.0 && index > 0 => engine.skip_to(index - 1),
-            Some(_) => engine.seek(0.0),
-            None => {}
+        let Some(key) = status.key else { return };
+        // Like on Android: past the first 3 seconds (or at the start of the queue), previous restarts the track.
+        match queue.previous(key) {
+            Some(previous) if status.position_secs <= 3.0 => start_key(engine, queue, Some(previous)),
+            _ => engine.seek(0.0),
         }
     })?;
-    thread::sleep(Duration::from_millis(30));
-    Ok(audio.state())
+    Ok(settled(&audio))
 }
 
 #[tauri::command]
 pub fn skip_to(audio: State<'_, DesktopAudio>, index: usize) -> CommandResult<Value> {
-    audio.with_engine(|engine, items| {
-        if index < items.len() {
-            engine.skip_to(index);
+    audio.with_engine(|engine, queue| start_key(engine, queue, queue.key_at(index)))?;
+    Ok(settled(&audio))
+}
+
+#[tauri::command]
+pub fn set_shuffle(audio: State<'_, DesktopAudio>, enabled: bool) -> CommandResult<Value> {
+    audio.with_engine(|engine, queue| {
+        queue.set_shuffle(enabled, engine.status().key);
+        resync(engine, queue);
+    })?;
+    Ok(audio.state())
+}
+
+#[tauri::command]
+pub fn set_repeat_mode(audio: State<'_, DesktopAudio>, mode: String) -> CommandResult<Value> {
+    let repeat = Repeat::parse(&mode).ok_or_else(|| format!("unknown repeat mode \"{mode}\" (off, all or one)"))?;
+    audio.with_engine(|engine, queue| {
+        queue.repeat = repeat;
+        resync(engine, queue);
+    })?;
+    Ok(audio.state())
+}
+
+#[tauri::command]
+pub fn add_to_queue(audio: State<'_, DesktopAudio>, items: Vec<Item>, play_next: Option<bool>) -> CommandResult<Value> {
+    audio.with_engine(|engine, queue| {
+        let was_empty = queue.len() == 0;
+        let first = queue.add(items, play_next.unwrap_or(false), engine.status().key);
+        if was_empty {
+            // It's the queue now: ready to play, like after setQueue.
+            match first.and_then(|key| track_of(queue, key)) {
+                Some(track) => engine.start(track, 0.0),
+                None => engine.stop(),
+            }
+        } else {
+            resync(engine, queue);
         }
     })?;
-    thread::sleep(Duration::from_millis(30));
+    Ok(settled(&audio))
+}
+
+#[tauri::command]
+pub fn remove_from_queue(audio: State<'_, DesktopAudio>, index: usize) -> CommandResult<Value> {
+    audio.with_engine(|engine, queue| {
+        let key = queue.key_at(index).ok_or_else(|| format!("no queue item at index {index}"))?;
+        let playing = engine.status().key;
+        if playing == Some(key) {
+            // Removing the playing track moves on to what would have come next.
+            let next = queue.peek_next(key, false).filter(|&next| next != key);
+            queue.remove(index);
+            match next.and_then(|next| track_of(queue, next)) {
+                Some(track) => engine.start(track, 0.0),
+                None => engine.stop(),
+            }
+        } else {
+            queue.remove(index);
+            resync(engine, queue);
+        }
+        Ok::<_, String>(())
+    })??;
+    Ok(settled(&audio))
+}
+
+#[tauri::command]
+pub fn move_in_queue(audio: State<'_, DesktopAudio>, from: usize, to: usize) -> CommandResult<Value> {
+    // The play order stays the same, so what plays next doesn't change.
+    if !audio.queue.lock().unwrap().move_entry(from, to) {
+        return Err(format!("can't move queue item {from} to {to}"));
+    }
     Ok(audio.state())
 }
 
@@ -309,11 +453,12 @@ pub fn get_state(audio: State<'_, DesktopAudio>) -> Value {
 #[tauri::command]
 pub fn get_queue(audio: State<'_, DesktopAudio>) -> Value {
     let state = audio.state();
-    let items = audio.0.lock().unwrap().items.clone();
+    let queue = audio.queue.lock().unwrap();
+    let items: Vec<&Item> = queue.entries().iter().map(|entry| &entry.item).collect();
     json!({
         "items": items,
         "currentIndex": state["queueIndex"],
-        "playOrder": (0..items.len()).collect::<Vec<_>>(),
+        "playOrder": queue.order(),
     })
 }
 
@@ -324,37 +469,25 @@ pub fn restore_last_queue() -> Option<Value> {
 
 #[tauri::command]
 pub fn dispose(audio: State<'_, DesktopAudio>) {
-    let mut inner = audio.0.lock().unwrap();
-    inner.engine = None;
-    inner.items.clear();
+    let engine = {
+        let mut inner = audio.inner.lock().unwrap();
+        inner.last_key = None;
+        inner.engine.take()
+    };
+    // Stopping the engine waits for its feeder thread, which may need the queue: no locks held here.
+    drop(engine);
+    audio.queue.lock().unwrap().set(Vec::new(), 0);
 }
 
-// ---- coming with the desktop queue (shuffle, repeat, editing) and later steps
-
+/// Of the options, desktop uses repeatAddedTracks so far; the rest are Android's.
 #[tauri::command]
-pub fn set_shuffle() -> CommandResult<Value> {
-    Err(not_yet("Shuffle"))
+pub fn set_options(audio: State<'_, DesktopAudio>, repeat_added_tracks: Option<bool>) {
+    if let Some(on) = repeat_added_tracks {
+        audio.queue.lock().unwrap().repeat_added = on;
+    }
 }
 
-#[tauri::command]
-pub fn set_repeat_mode() -> CommandResult<Value> {
-    Err(not_yet("Repeat"))
-}
-
-#[tauri::command]
-pub fn add_to_queue() -> CommandResult<Value> {
-    Err(not_yet("Queue editing"))
-}
-
-#[tauri::command]
-pub fn remove_from_queue() -> CommandResult<Value> {
-    Err(not_yet("Queue editing"))
-}
-
-#[tauri::command]
-pub fn move_in_queue() -> CommandResult<Value> {
-    Err(not_yet("Queue editing"))
-}
+// ---- coming in later steps
 
 #[tauri::command]
 pub fn set_rate() -> CommandResult<Value> {
@@ -379,9 +512,6 @@ pub fn set_skip_interval() {}
 
 #[tauri::command]
 pub fn set_library() {}
-
-#[tauri::command]
-pub fn set_options() {}
 
 #[tauri::command]
 pub fn set_controls() {}

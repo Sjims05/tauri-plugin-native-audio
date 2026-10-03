@@ -5,3 +5,4 @@ pub mod convert;
 pub mod decode;
 pub mod engine;
 pub mod pipeline;
+pub mod queue;

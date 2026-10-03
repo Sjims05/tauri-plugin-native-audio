@@ -86,7 +86,8 @@ impl Converter {
         let expected = self.output_length(self.input_frames);
         let mut out = Vec::new();
         let rest: Vec<Vec<f32>> = self.pending.iter_mut().map(std::mem::take).collect();
-        let mut input = Some(rest);
+        // rubato rejects an empty buffer: nothing left over is the same as no input.
+        let mut input = if rest[0].is_empty() { None } else { Some(rest) };
         // Feed silence until everything real has come out of the resampler's delay line.
         for _ in 0..8 {
             if self.output_frames >= expected {
