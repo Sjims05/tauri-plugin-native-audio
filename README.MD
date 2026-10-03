@@ -61,17 +61,17 @@ Add the Rust plugin in `src-tauri/Cargo.toml`:
 
 ```toml
 [dependencies]
-tauri-plugin-native-audio = { git = "https://github.com/Sjims05/tauri-plugin-native-audio", tag = "v1.2.2" }
+tauri-plugin-native-audio = { git = "https://github.com/Sjims05/tauri-plugin-native-audio", tag = "v1.2.3" }
 ```
 
 Add the JavaScript bindings:
 
 ```sh
-pnpm add github:Sjims05/tauri-plugin-native-audio#v1.2.2
+pnpm add github:Sjims05/tauri-plugin-native-audio#v1.2.3
 # or
-npm install github:Sjims05/tauri-plugin-native-audio#v1.2.2
+npm install github:Sjims05/tauri-plugin-native-audio#v1.2.3
 # or
-yarn add github:Sjims05/tauri-plugin-native-audio#v1.2.2
+yarn add github:Sjims05/tauri-plugin-native-audio#v1.2.3
 ```
 
 Use the same tag for both, so the Rust and JS sides always match.
@@ -86,6 +86,15 @@ tauri-plugin-native-audio = { path = "../../tauri-plugin-native-audio" }
 
 ```sh
 npm install ../tauri-plugin-native-audio
+```
+
+A linked folder has no `node_modules` of its own, so tell Vite to resolve `@tauri-apps/api` from the app
+(`vite.config.ts`):
+
+```ts
+export default defineConfig({
+  resolve: { dedupe: ["@tauri-apps/api"] },
+});
 ```
 
 ## Setting up

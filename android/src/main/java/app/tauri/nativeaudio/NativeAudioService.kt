@@ -90,6 +90,10 @@ class NativeAudioService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        // The session outlives this service (it belongs to the runtime), so unregister it here: otherwise
+        // the media3 controller this service connected to it stays, and every service restart (each
+        // Android Auto connection, each app start) leaves one more behind.
+        NativeAudioRuntime.mediaSession()?.let { if (it in sessions) removeSession(it) }
         NativeAudioRuntime.stopWatchingCarConnection()
         NativeAudioRuntime.onKeepAliveRulesChanged = null
         handler.removeCallbacks(leaveForeground)

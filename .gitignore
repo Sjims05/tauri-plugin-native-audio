@@ -22,3 +22,6 @@
 .DS_Store
 .idea
 *.iml
+
+# JS package (root package.json)
+/node_modules
