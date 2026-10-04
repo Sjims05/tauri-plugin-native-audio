@@ -1,44 +1,34 @@
-# Publishing
+# Releasing
 
-## 1) Preflight checks
+This fork is installed from GitHub tags (see the README), not from crates.io or npm: the package names are the
+original plugin's.
 
-From plugin repo root:
+## 1) Checks
+
+From the repo root:
 
 ```bash
-cargo check
-cargo package
+cargo clippy --features desktop --all-targets   # no warnings
+cargo test --lib                                # the desktop player's queue and storage tests
+cargo check --no-default-features --features mobile
+npm pack --dry-run                              # the JavaScript package: guest-js/dist-js and the licenses
 ```
 
-From `guest-js/`:
+The Android tests run from an app that uses the plugin (its generated Android project includes the plugin as
+`:tauri-plugin-native-audio`):
 
 ```bash
-npm pack --dry-run
+./gradlew :tauri-plugin-native-audio:testDebugUnitTest
 ```
 
-## 2) Version bump
+## 2) Version
 
-- Bump crate version in `Cargo.toml`.
-- Bump npm version in `guest-js/package.json`.
-- Commit and tag release:
+- Bump `version` in `Cargo.toml` and in `package.json` (the same number).
+- Update the tag in the README's install instructions.
+- Commit and tag:
 
 ```bash
-git add .
-git commit -m "release: vX.Y.Z"
+git commit -am "release: vX.Y.Z"
 git tag vX.Y.Z
 git push origin main --tags
-```
-
-## 3) Publish Rust crate
-
-```bash
-cargo login
-cargo publish
-```
-
-## 4) Publish npm package
-
-```bash
-cd guest-js
-npm login
-npm publish
 ```

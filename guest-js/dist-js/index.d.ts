@@ -407,10 +407,6 @@ export declare const setRepeatMode: (mode: NativeAudioRepeatMode) => Promise<Nat
 export declare const setLibrary: (library: NativeAudioLibrary) => Promise<void>;
 /** Saved on the device (desktop too); only the options passed are changed. */
 export declare const setOptions: (options: NativeAudioOptions) => Promise<void>;
-/**
- * Extra buttons for Android Auto and the Android 13+ media controls (Android, with carSupport).
- * Saved on the device, so they're there even when Android Auto starts the app in the background.
- */
 /** Pauses playback after some minutes (fading out) or at the end of the current track. Replaces a running timer. */
 export declare const setSleepTimer: (timer: NativeAudioSleepTimer) => Promise<NativeAudioState>;
 export declare const cancelSleepTimer: () => Promise<NativeAudioState>;
@@ -424,16 +420,16 @@ export declare const setItemProgress: (
   entries: NativeAudioItemProgress[],
   options?: { merge?: boolean }
 ) => Promise<NativeAudioItemProgress[]>;
+/**
+ * Extra buttons for Android Auto and the Android 13+ media controls (Android, with carSupport).
+ * Saved on the device, so they're there even when Android Auto starts the app in the background.
+ */
 export declare const setControls: (controls: NativeAudioControls) => Promise<void>;
 /** Sets a toggle button's state for tracks, e.g. from the app's own liked songs. */
 export declare const setControlActive: (buttonId: string, itemIds: number[], active: boolean) => Promise<void>;
 /** Logged custom button presses not acknowledged yet, oldest first. */
 export declare const getControlPresses: () => Promise<NativeAudioControlPress[]>;
 export declare const acknowledgeControlPresses: (ids: string[]) => Promise<void>;
-/**
- * Calls `handler` for every custom button press: first those logged while the app wasn't running,
- * then live ones. Each is acknowledged after `handler` finishes. Returns a function to stop listening.
- */
 /** Logged playback events not acknowledged yet, oldest first. */
 export declare const getPlaybackEvents: () => Promise<NativeAudioPlaybackEvent[]>;
 export declare const acknowledgePlaybackEvents: (ids: string[]) => Promise<void>;
@@ -470,6 +466,10 @@ export declare const acknowledgeTrackedListChanges: (ids: string[]) => Promise<v
  * the latest per list), then live ones. Each is acknowledged after `handler` finishes.
  */
 export declare const onTrackedListChanged: (handler: (change: NativeAudioTrackedListChange) => void | Promise<void>) => Promise<() => void>;
+/**
+ * Calls `handler` for every custom button press: first those logged while the app wasn't running,
+ * then live ones. Each is acknowledged after `handler` finishes. Returns a function to stop listening.
+ */
 export declare const onControlPressed: (handler: (press: NativeAudioControlPress) => void | Promise<void>) => Promise<() => void>;
 export declare const getState: () => Promise<NativeAudioState>;
 export declare const getProgressCheckpoint: () => Promise<NativeAudioProgressCheckpoint | null>;

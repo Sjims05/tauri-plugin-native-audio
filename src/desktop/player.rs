@@ -722,7 +722,14 @@ impl DesktopAudio {
     }
 
     pub fn skip_to(&self, index: usize) -> Result<Value> {
-        self.with_engine(|engine, queue| start_key(engine, queue, queue.key_at(index)))?;
+        self.with_engine(|engine, queue| {
+            let key = queue.key_at(index);
+            // Picking a track while shuffled plays it, then shuffles the rest of the queue after it (as on Android).
+            if queue.shuffle && key.is_some() {
+                queue.set_shuffle(true, key);
+            }
+            start_key(engine, queue, key)
+        })?;
         Ok(self.settled())
     }
 
