@@ -229,13 +229,18 @@ pub fn set_rate() -> Result<Value> {
 }
 
 #[tauri::command]
-pub fn set_sleep_timer() -> Result<Value> {
-    Err(not_yet("The sleep timer"))
+pub fn set_sleep_timer(
+    audio: State<'_, DesktopAudio>,
+    minutes: Option<f64>,
+    end_of_track: Option<bool>,
+    fade_out_seconds: Option<f64>,
+) -> Result<Value> {
+    audio.set_sleep_timer(minutes, end_of_track.unwrap_or(false), fade_out_seconds)
 }
 
 #[tauri::command]
 pub fn cancel_sleep_timer(audio: State<'_, DesktopAudio>) -> Value {
-    audio.state()
+    audio.cancel_sleep_timer()
 }
 
 // ---- Android-only (Android Auto, car buttons): accepted so the same app code runs on every

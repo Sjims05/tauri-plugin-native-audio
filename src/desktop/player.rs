@@ -47,6 +47,18 @@ pub struct Item {
     pub artwork_url: Option<String>,
 }
 
+/// A running sleep timer.
+#[derive(Debug, Clone, Copy)]
+enum SleepTimer {
+    /// Pause at `ends_at` (epoch ms `ends_at_ms` for the state), fading out over the last `fade_secs`.
+    At { ends_at: Instant, ends_at_ms: i64, fade_secs: f64 },
+    /// Pause when the current track ends.
+    EndOfTrack,
+}
+
+/// Default fade-out of a sleep timer (as on Android).
+const SLEEP_FADE_OUT_SECS: f64 = 10.0;
+
 /// Where to pick up when a new engine is opened (output device changed or lost).
 struct Resume {
     track: Option<(Track, f64)>,
@@ -82,6 +94,7 @@ struct Inner {
     saved_queue_revision: u64,
     /// resumeLastQueue ran (at the first initialize).
     resumed: bool,
+    sleep: Option<SleepTimer>,
 }
 
 /// The desktop player, managed as Tauri state. Locks, in this order only: `inner`, `queue`,
@@ -121,6 +134,7 @@ impl DesktopAudio {
                 volume_unsaved: false,
                 saved_queue_revision: queue.revision(),
                 resumed: false,
+                sleep: None,
             })),
             queue: Arc::new(Mutex::new(queue)),
             persist: Arc::new(Mutex::new(persist)),
@@ -144,6 +158,7 @@ impl DesktopAudio {
         }
         let engine = Engine::new(self.next_track(), inner.device.as_deref())?;
         engine.set_volume(inner.volume_curve.gain(inner.volume));
+        engine.pause_after_current(matches!(inner.sleep, Some(SleepTimer::EndOfTrack)));
         if let Some(resume) = inner.resume.take() {
             if let Some((track, position)) = resume.track {
                 engine.start(track, position);
@@ -207,8 +222,11 @@ impl DesktopAudio {
             "queueLength": queue.len(),
             "shuffle": queue.shuffle,
             "repeatMode": queue.repeat.name(),
-            "sleepTimerEndsAtMs": null,
-            "sleepTimerEndOfTrack": false,
+            "sleepTimerEndsAtMs": match inner.sleep {
+                Some(SleepTimer::At { ends_at_ms, .. }) => json!(ends_at_ms),
+                _ => Value::Null,
+            },
+            "sleepTimerEndOfTrack": matches!(inner.sleep, Some(SleepTimer::EndOfTrack)),
             "volume": inner.volume,
         });
         let Some(engine) = inner.engine.as_ref() else { return state };
@@ -300,8 +318,9 @@ impl DesktopAudio {
             let state = self.state();
             self.sync_panel(&mut panel, &state);
             // Sent when something changes, and every 250 ms while playing (the position).
+            self.check_sleep_timer();
             let summary = format!(
-                "{}|{}|{}|{}|{}|{}|{}|{}",
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 state["status"],
                 state["queueIndex"],
                 state["isPlaying"],
@@ -309,6 +328,8 @@ impl DesktopAudio {
                 state["shuffle"],
                 state["repeatMode"],
                 state["volume"],
+                state["sleepTimerEndsAtMs"],
+                state["sleepTimerEndOfTrack"],
                 state["error"]
             );
             let playing = state["isPlaying"].as_bool() == Some(true);
@@ -841,7 +862,9 @@ impl DesktopAudio {
         {
             let mut inner = self.inner.lock().unwrap();
             inner.volume = volume;
-            if let Some(engine) = inner.engine.as_ref() {
+            let fading = matches!(inner.sleep, Some(SleepTimer::At { ends_at, fade_secs, .. })
+                if ends_at.saturating_duration_since(Instant::now()).as_secs_f64() < fade_secs);
+            if let Some(engine) = inner.engine.as_ref().filter(|_| !fading) {
                 engine.set_volume(inner.volume_curve.gain(volume));
             }
             if inner.background_started {
@@ -946,6 +969,78 @@ impl DesktopAudio {
 
     pub fn clear_progress_checkpoint(&self) {
         self.persist.lock().unwrap().clear_checkpoint();
+    }
+
+    // ---- the sleep timer
+
+    /// Pauses after `minutes` (fading out over the last `fade_out_secs`), or with `end_of_track` when
+    /// the current track ends. Replaces a running timer.
+    pub fn set_sleep_timer(&self, minutes: Option<f64>, end_of_track: bool, fade_out_secs: Option<f64>) -> Result<Value> {
+        let fade = fade_out_secs.unwrap_or(SLEEP_FADE_OUT_SECS);
+        if !fade.is_finite() || fade < 0.0 {
+            return Err("fadeOutSeconds must be >= 0".into());
+        }
+        let timer = if end_of_track {
+            SleepTimer::EndOfTrack
+        } else {
+            let minutes = minutes.filter(|m| m.is_finite() && *m > 0.0).ok_or("minutes must be > 0, or endOfTrack true")?;
+            let duration = Duration::from_secs_f64(minutes * 60.0);
+            SleepTimer::At {
+                ends_at: Instant::now() + duration,
+                ends_at_ms: super::persist::now_ms() + duration.as_millis() as i64,
+                fade_secs: fade.min(duration.as_secs_f64()),
+            }
+        };
+        self.with_engine(|_, _| ())?;
+        {
+            let mut inner = self.inner.lock().unwrap();
+            Self::clear_sleep_timer(&mut inner);
+            inner.sleep = Some(timer);
+            if let (SleepTimer::EndOfTrack, Some(engine)) = (timer, inner.engine.as_ref()) {
+                engine.pause_after_current(true);
+            }
+        }
+        Ok(self.state())
+    }
+
+    pub fn cancel_sleep_timer(&self) -> Value {
+        Self::clear_sleep_timer(&mut self.inner.lock().unwrap());
+        self.state()
+    }
+
+    /// Stops a running timer or fade, and puts the volume back.
+    fn clear_sleep_timer(inner: &mut Inner) {
+        if inner.sleep.take().is_some() {
+            if let Some(engine) = inner.engine.as_ref() {
+                engine.pause_after_current(false);
+                engine.set_volume(inner.volume_curve.gain(inner.volume));
+            }
+        }
+    }
+
+    /// The background loop's part: fades out and pauses when the time is up; the end-of-track timer
+    /// is done once the engine paused at a track's end (or the queue ended).
+    fn check_sleep_timer(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(timer) = inner.sleep else { return };
+        let Some(engine) = inner.engine.as_ref() else { return };
+        match timer {
+            SleepTimer::EndOfTrack => {
+                if engine.take_paused_after_current() || engine.status().ended {
+                    Self::clear_sleep_timer(&mut inner);
+                }
+            }
+            SleepTimer::At { ends_at, fade_secs, .. } => {
+                let left = ends_at.saturating_duration_since(Instant::now()).as_secs_f64();
+                if left <= 0.0 {
+                    engine.pause();
+                    Self::clear_sleep_timer(&mut inner);
+                } else if left < fade_secs {
+                    // Fading out: the set volume, scaled down to nothing at the end.
+                    engine.set_volume(inner.volume_curve.gain(inner.volume) * (left / fade_secs) as f32);
+                }
+            }
+        }
     }
 
     /// The output devices, the chosen one (null: the system default) and the one in use.

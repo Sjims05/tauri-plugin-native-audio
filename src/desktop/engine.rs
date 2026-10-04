@@ -91,6 +91,12 @@ struct Shared {
     /// The output stream stopped working (device unplugged or disabled, the system default changed):
     /// it needs reopening.
     device_lost: AtomicBool,
+    /// Pause once the current track is over (the end-of-track sleep timer) ...
+    pause_after_current: AtomicBool,
+    /// ... at this output frame, where the next track starts (u64::MAX: not known yet / none) ...
+    pause_at_frame: AtomicU64,
+    /// ... and it did.
+    paused_after_current: AtomicBool,
 }
 
 pub struct Engine {
@@ -124,6 +130,9 @@ impl Engine {
             requested: AtomicU64::new(0),
             done: AtomicU64::new(0),
             device_lost: AtomicBool::new(false),
+            pause_after_current: AtomicBool::new(false),
+            pause_at_frame: AtomicU64::new(u64::MAX),
+            paused_after_current: AtomicBool::new(false),
         });
 
         // The device's own rate and channels; tracks are converted to it.
@@ -209,6 +218,25 @@ impl Engine {
     }
 
     /// The output device stopped working: open a new Engine.
+    /// Pause exactly where the current track ends (the next one is then ready at its start), or not.
+    pub fn pause_after_current(&self, on: bool) {
+        self.shared.pause_after_current.store(on, Ordering::SeqCst);
+        let at = if on {
+            // The next track may be prepared already.
+            let played = self.shared.frames_played.load(Ordering::SeqCst);
+            let markers = self.shared.markers.lock().unwrap();
+            markers.iter().find(|m| m.start_frame > played).map_or(u64::MAX, |m| m.start_frame)
+        } else {
+            u64::MAX
+        };
+        self.shared.pause_at_frame.store(at, Ordering::SeqCst);
+    }
+
+    /// Playback paused at the end of a track (pause_after_current) since the last call.
+    pub fn take_paused_after_current(&self) -> bool {
+        self.shared.paused_after_current.swap(false, Ordering::SeqCst)
+    }
+
     pub fn device_lost(&self) -> bool {
         self.shared.device_lost.load(Ordering::SeqCst)
     }
@@ -368,10 +396,15 @@ fn output_stream<T: SizedSample + FromSample<f32> + Send + 'static>(
                     return;
                 }
                 let volume = f32::from_bits(shared.volume_bits.load(Ordering::SeqCst));
+                // The end-of-track sleep timer: stop right where the next track starts.
+                let pause_at = shared.pause_at_frame.load(Ordering::SeqCst);
+                let until_pause = pause_at.saturating_sub(shared.frames_played.load(Ordering::SeqCst));
                 let mut played = 0u64;
                 let mut missing = 0u64;
                 for frame in data.chunks_mut(channels) {
-                    if consumer.slots() >= channels {
+                    if played >= until_pause {
+                        frame.fill(silence);
+                    } else if consumer.slots() >= channels {
                         for sample in frame.iter_mut() {
                             *sample = T::from_sample(consumer.pop().unwrap_or(0.0) * volume);
                         }
@@ -382,6 +415,12 @@ fn output_stream<T: SizedSample + FromSample<f32> + Send + 'static>(
                     }
                 }
                 shared.frames_played.fetch_add(played, Ordering::SeqCst);
+                if played >= until_pause {
+                    shared.playing.store(false, Ordering::SeqCst);
+                    shared.pause_at_frame.store(u64::MAX, Ordering::SeqCst);
+                    shared.pause_after_current.store(false, Ordering::SeqCst);
+                    shared.paused_after_current.store(true, Ordering::SeqCst);
+                }
                 if missing > 0 && !shared.ended.load(Ordering::SeqCst) {
                     shared.underrun_frames.fetch_add(missing, Ordering::SeqCst);
                 }
@@ -493,6 +532,7 @@ impl Feeder {
         *self.shared.error.lock().unwrap() = None;
         self.pipeline = None;
         self.starting = None;
+        self.shared.pause_at_frame.store(u64::MAX, Ordering::SeqCst);
         self.draining_end = false;
     }
 
@@ -527,6 +567,13 @@ impl Feeder {
                 self.write_pending();
             }
             Step::TrackStart(start) => {
+                // The end-of-track sleep timer pauses where the next track starts (not the first
+                // track after a start(): that's the one playing).
+                if self.shared.pause_after_current.load(Ordering::SeqCst)
+                    && start.output_frame > self.shared.frames_played.load(Ordering::SeqCst)
+                {
+                    let _ = self.shared.pause_at_frame.compare_exchange(u64::MAX, start.output_frame, Ordering::SeqCst, Ordering::SeqCst);
+                }
                 self.plays += 1;
                 self.shared.markers.lock().unwrap().push_back(Marker {
                     play: self.plays,
