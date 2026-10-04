@@ -24,7 +24,8 @@ by uvarov-frontend and is still a drop-in replacement for it: same package names
 | Extra player buttons (like, seek, speed, sleep timer, …) | ✓³ | ✓ | | |
 | Tracked lists, playback log, listening progress | ✓ | ✓ | ✓ | ✓ |
 
-¹ The iOS code exists but hasn't been compiled or tested in this fork, and newer features weren't added to it.
+¹ **iOS is unmaintained:** the iOS code is kept from the original plugin so iOS apps that used it keep working,
+but it isn't compiled or tested in this fork and doesn't get new features.
 ² Without the newer options (`updateQueue`, auto-resume modes, previous / next rules).
 ³ In the Android 13+ media controls, with `carSupport` enabled.
 
@@ -123,7 +124,7 @@ Platform requirements:
   notification permission is requested in `initialize()`. The plugin's manifest declares `INTERNET`,
   `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK`, `POST_NOTIFICATIONS` and `WAKE_LOCK`.
 - **Desktop**: plays local files (paths or `file://` URLs). See [Desktop](docs/desktop.md).
-- **iOS** 14.0+, with Background Modes → Audio enabled for background playback (untested, see above).
+- **iOS** (unmaintained, see above) 14.0+, with Background Modes → Audio enabled for background playback.
 
 ## Quick start
 

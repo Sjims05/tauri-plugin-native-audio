@@ -57,8 +57,8 @@
 
 ## iOS
 
-The iOS code hasn't been compiled or tested in this fork, and newer features weren't added to it. From the original
-plugin:
+iOS is unmaintained: the code is kept from the original plugin so iOS apps that used it keep working, but it isn't
+compiled or tested in this fork and doesn't get new features. Notes from the original plugin:
 
 - Requires iOS 14.0+. For background playback, enable Background Modes → Audio for the app target.
 - Plain `http://` URLs can be blocked by App Transport Security: use HTTPS or configure ATS exceptions.
