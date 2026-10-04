@@ -43,6 +43,8 @@ internal object MediaLibraryStore {
         /** Shows a tracked list instead of [children] (see TrackedLists). */
         val trackedList: String?,
         val group: String?,
+        /** Tapping it in Android Auto opens it instead of playing it (its items still play it from there). */
+        val openOnTap: Boolean = false,
     )
 
     sealed interface Node {
@@ -156,6 +158,7 @@ internal object MediaLibraryStore {
                 children = children,
                 trackedList = folderJson.optStringOrNull("trackedList")?.takeIf { it.isNotEmpty() },
                 group = folderJson.optStringOrNull("group"),
+                openOnTap = folderJson.optBoolean("openOnTap", false),
             )
             folders[id] = folder
             return folder

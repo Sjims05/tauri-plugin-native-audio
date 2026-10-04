@@ -5,7 +5,10 @@ use tauri::{
 };
 
 mod api;
-pub use api::{NativeAudio, NativeAudioExt, Queue, QueueItem, UpdateQueueOptions, UpdateQueueResult};
+pub use api::{
+    Library, LibraryChild, LibraryFolder, LibraryItem, NativeAudio, NativeAudioExt, Queue, QueueItem, UpdateQueueOptions,
+    UpdateQueueResult,
+};
 
 /// The desktop player. Public so its test program (examples/desktop_play.rs) can drive it directly.
 #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]

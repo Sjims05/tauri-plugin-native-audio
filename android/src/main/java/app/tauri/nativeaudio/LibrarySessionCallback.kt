@@ -419,7 +419,8 @@ internal class LibrarySessionCallback(private val context: Context) : MediaLibra
                     .setSubtitle(folder.subtitle)
                     .setArtworkUri(folderArtwork(folder))
                     .setIsBrowsable(true)
-                    .setIsPlayable(folder.playable)
+                    // Android Auto plays a folder that's playable when it's tapped: openOnTap shows it as one to open.
+                    .setIsPlayable(folder.playable && !folder.openOnTap)
                     .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_MIXED)
                     .setExtras(extras)
                     .build(),

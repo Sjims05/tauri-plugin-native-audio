@@ -1059,12 +1059,18 @@ object NativeAudioRuntime {
     }
 
     fun setLibrary(context: Context, library: JSONObject) {
+        val before = MediaLibraryStore.get(context).folders.keys
         MediaLibraryStore.set(context, library)
         // Search may have been turned on or off: update what connected controllers may do.
         refreshControls(updateCommands = true)
-        // Let connected browsers (Android Auto) reload the top level.
+        // Let connected browsers (Android Auto) reload the top level and every folder, old and new: Auto keeps
+        // folders it has opened, and would go on showing their old contents.
         val session = synchronized(lock) { mediaSession } ?: return
-        tickHandler.post { session.notifyChildrenChanged("root", Int.MAX_VALUE, null) }
+        val folders = before + MediaLibraryStore.get(context).folders.keys
+        tickHandler.post {
+            session.notifyChildrenChanged("root", Int.MAX_VALUE, null)
+            folders.forEach { session.notifyChildrenChanged("folder:$it", Int.MAX_VALUE, null) }
+        }
     }
 
     fun mediaSession(): MediaLibrarySession? {

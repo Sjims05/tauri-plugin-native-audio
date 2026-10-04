@@ -211,7 +211,10 @@ if queue.source_id.as_deref() == Some("album:12") {
 }
 ```
 
-`QueueItem`, `UpdateQueueOptions` and the result are the JavaScript API's shapes. Desktop: the Rust player
+For Android Auto, `app.native_audio().set_library(&library)` sends the browsable library (`Library`,
+`LibraryFolder`, `LibraryItem`, `LibraryChild`), like `setLibrary`; elsewhere it's accepted and not used.
+
+`QueueItem`, `UpdateQueueOptions`, `Library` and the results are the JavaScript API's shapes. Desktop: the Rust player
 itself. Android: the plugin's native code; call from a background thread (it waits for the answer). iOS: not
 supported yet.
 

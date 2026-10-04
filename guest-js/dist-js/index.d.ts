@@ -66,6 +66,11 @@ export type NativeAudioLibraryFolder = {
     artworkUrl?: string;
     /** Can be played as a whole (albums, playlists). Picking an item inside plays the folder from that item. */
     playable?: boolean;
+    /**
+     * With `playable`: tapping the folder in Android Auto opens it instead of playing it (Auto plays playable
+     * folders on tap). Its items still play the whole folder from there, and voice still plays it. Default false.
+     */
+    openOnTap?: boolean;
     /** How Android Auto lays out this folder's children. */
     style?: 'list' | 'grid';
     /** Sub-folders, and item ids from `items`. */

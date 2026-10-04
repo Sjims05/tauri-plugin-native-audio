@@ -55,11 +55,12 @@ await setLibrary({
 ```
 
 - It's saved on the device, so Auto can browse and play it while the app isn't running. Call it again whenever the
-  library changes; Auto reloads the top level.
+  library changes; Auto reloads the top level and every folder.
 - Folders have no meaning of their own: they can be albums, artists, playlists, podcasts, or a single flat list.
 - `playable: true` folders can be played as a whole, and picking an item inside one plays the folder as the queue,
   starting at that item (and records the folder for `folder` [tracked lists](syncing.md#tracked-lists)). Items in
-  other folders play on their own.
+  other folders play on their own. Android Auto plays a playable folder when it's tapped; with `openOnTap: true`
+  tapping opens it instead (its items still play the whole folder, and voice still plays it).
 - `style` (`"list"` or `"grid"`) sets how Auto shows a folder's children.
 - `trackedList: "<list id>"` makes a folder show a [tracked list](syncing.md#tracked-lists) instead of `children`,
   for example a "Recently played" tab. It updates on its own as things play.
@@ -117,7 +118,7 @@ Within that, the content is up to you:
 | Lists, grids, nesting | `style` per folder, folders inside folders |
 | Titles, subtitles | `title`, `subtitle` on folders and items |
 | Artwork | `artworkUrl`, embedded covers, folder collages, see [Artwork](#artwork) |
-| What tapping does | `playable` folders play as a whole; items in them play the folder from there |
+| What tapping does | `playable` folders play as a whole (add `openOnTap` to open them instead); items in them play the folder from there |
 | Section headers in a list | `group` on items and folders |
 | Played / partly played marks | `progress` on items, or recorded with [`trackProgress`](syncing.md#listening-progress) |
 | Search and voice ("play … on <app>") | On by default; `search: false` turns it off |
@@ -256,6 +257,10 @@ await setControlActive("like", likedSongIds, true);
 
 ## Good to know
 
+- **Colors on the small player card:** Android Auto picks its colors from the cover by itself, and its small player
+  card can pick different ones than the big player (e.g. red instead of yellow from the same cover). Apps can't set
+  them. The plugin passes on one cover only (the app's `artworkUrl`, not also the picture inside the audio file),
+  so both work from the same picture; the difference that remains is Auto's own.
 - **Playing on connect:** Android Auto can start playback by itself when it connects (its own "auto-resume media"
   setting), whatever `resumeLastQueue` is set to. With that setting off, `resumeLastQueue: "play"` decides.
 - **The controls after a pause:** see `keepAliveWhileCarConnected`, `pausedKeepAliveMinutes` and `keepQueueOnStop` in

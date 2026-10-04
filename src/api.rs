@@ -1,6 +1,6 @@
-//! The player for the app's own Rust code, not only its JavaScript: what's queued, and updating the queue.
-//! For work that runs while the app's UI may be asleep, e.g. a library scan keeping the playing queue in
-//! step with the library.
+//! The player for the app's own Rust code, not only its JavaScript: what's queued, updating the queue, and
+//! the Android Auto library. For work that runs while the app's UI may be asleep, e.g. a library scan
+//! keeping the playing queue and Android Auto in step with the library.
 //!
 //! ```ignore
 //! use tauri_plugin_native_audio::{NativeAudioExt, UpdateQueueOptions};
@@ -75,6 +75,88 @@ pub struct UpdateQueueResult {
     pub added: u32,
     /// Tracks no longer in the playlist.
     pub removed: u32,
+}
+
+/// The browsable library for Android Auto, as `setLibrary` takes it in the JavaScript API (see
+/// docs/android-auto.md).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Library {
+    pub items: Vec<LibraryItem>,
+    /// Top-level folders: Android Auto's tabs (it shows up to 4).
+    pub root: Vec<LibraryFolder>,
+    /// Search and "play ... on <app>" by voice (default true).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search: Option<bool>,
+    /// Shown while `root` is empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_message: Option<String>,
+    /// Items without `artwork_url` show their file's embedded cover (default true).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedded_artwork: Option<bool>,
+    /// Folders without `artwork_url`: "collage" (default), "first" or "none".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder_artwork: Option<String>,
+}
+
+/// A playable item, defined once in `items` and listed by id in folders.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryItem {
+    pub id: i64,
+    pub src: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artist: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artwork_url: Option<String>,
+    /// A header above a run of entries with the same group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// 0 to 1: not played, partly played, played.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<f64>,
+}
+
+/// A folder: a tab, a playlist, an album...
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryFolder {
+    /// Unique across all folders; a played folder becomes the queue's `source_id`.
+    pub id: String,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artwork_url: Option<String>,
+    /// Played as a whole; picking an item inside plays the folder from there.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub playable: bool,
+    /// With `playable`: tapping it in Android Auto opens it instead of playing it (its items still play it
+    /// from there, and voice still plays it).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub open_on_tap: bool,
+    /// "list" or "grid".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<LibraryChild>,
+    /// Show a tracked list instead of `children` (it updates on its own).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracked_list: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+}
+
+/// A folder's child: a sub-folder, or an item's id.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum LibraryChild {
+    Folder(LibraryFolder),
+    Item(i64),
 }
 
 /// The player, for Rust code: `app.native_audio()` (see [`NativeAudioExt`]).
@@ -153,6 +235,22 @@ impl<R: Runtime> NativeAudio<R> {
     }
 }
 
+impl<R: Runtime> NativeAudio<R> {
+    /// The browsable library for Android Auto, saved on the device (Auto uses it with the app closed).
+    /// Replaces the previous one. Elsewhere it's accepted and not used.
+    pub fn set_library(&self, library: &Library) -> Result<()> {
+        #[cfg(all(feature = "mobile", target_os = "android"))]
+        {
+            self.handle.run_mobile_plugin::<serde_json::Value>("setLibrary", library).map(|_| ()).map_err(|e| e.to_string())
+        }
+        #[cfg(not(all(feature = "mobile", target_os = "android")))]
+        {
+            let _ = library;
+            Ok(())
+        }
+    }
+}
+
 /// `app.native_audio()` on anything that has the app (the app handle, a window, ...).
 pub trait NativeAudioExt<R: Runtime> {
     fn native_audio(&self) -> &NativeAudio<R>;
@@ -161,5 +259,49 @@ pub trait NativeAudioExt<R: Runtime> {
 impl<R: Runtime, T: Manager<R>> NativeAudioExt<R> for T {
     fn native_audio(&self) -> &NativeAudio<R> {
         self.state::<NativeAudio<R>>().inner()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_library_is_sent_in_the_javascript_apis_shape() {
+        let library = Library {
+            items: vec![LibraryItem { id: 1, src: "/m/a.mp3".into(), title: Some("A".into()), group: Some("X".into()), ..Default::default() }],
+            root: vec![LibraryFolder {
+                id: "albums".into(),
+                title: "Albums".into(),
+                style: Some("grid".into()),
+                children: vec![
+                    LibraryChild::Folder(LibraryFolder {
+                        id: "album:1".into(),
+                        title: "One".into(),
+                        playable: true,
+                        children: vec![LibraryChild::Item(1)],
+                        ..Default::default()
+                    }),
+                    LibraryChild::Item(1),
+                ],
+                ..Default::default()
+            }],
+            empty_message: Some("Nothing yet".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&library).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "items": [{ "id": 1, "src": "/m/a.mp3", "title": "A", "group": "X" }],
+                "root": [{
+                    "id": "albums",
+                    "title": "Albums",
+                    "style": "grid",
+                    "children": [{ "id": "album:1", "title": "One", "playable": true, "children": [1] }, 1],
+                }],
+                "emptyMessage": "Nothing yet",
+            })
+        );
     }
 }

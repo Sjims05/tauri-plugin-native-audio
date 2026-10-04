@@ -4,6 +4,7 @@ import androidx.media3.common.C
 import androidx.media3.common.FlagSet
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import java.util.concurrent.CopyOnWriteArraySet
 import kotlin.math.max
@@ -48,6 +49,18 @@ internal class SkipIntervalPlayer(
     override fun removeListener(listener: Player.Listener) {
         super.removeListener(listener)
         listeners.remove(listener)
+    }
+
+    /**
+     * One cover for every view: when the app gave the playing item artwork, the picture embedded in the audio
+     * file (which ExoPlayer adds as artwork data) isn't passed on. Otherwise Android Auto could take its small
+     * player's colors from one picture and its big player's from the other.
+     */
+    override fun getMediaMetadata(): MediaMetadata {
+        val metadata = super.getMediaMetadata()
+        val appArtwork = player.currentMediaItem?.mediaMetadata?.artworkUri ?: return metadata
+        if (metadata.artworkData == null) return metadata
+        return metadata.buildUpon().setArtworkData(null, null).setArtworkUri(appArtwork).build()
     }
 
     override fun getAvailableCommands(): Player.Commands {
