@@ -88,8 +88,11 @@ tauri-plugin-native-audio = { path = "../../tauri-plugin-native-audio" }
 npm install ../tauri-plugin-native-audio
 ```
 
-A linked folder has no `node_modules` of its own, so tell Vite to resolve `@tauri-apps/api` from the app
-(`vite.config.ts`): `resolve: { dedupe: ["@tauri-apps/api"] }`.
+Tell Vite to resolve `@tauri-apps/api` from the app, so there's one copy (`vite.config.ts`):
+`resolve: { dedupe: ["@tauri-apps/api"] }`.
+
+The JavaScript bindings are written in `guest-js/index.ts`; after changing them, run `npm install` (once) and
+`npm run build` in the plugin, which updates the committed `guest-js/dist-js`.
 
 ## Setting up
 

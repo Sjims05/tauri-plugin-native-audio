@@ -2,8 +2,8 @@
 
 [← README](../README.MD) · [Playback](playback.md) · [Options](options.md)
 
-Everything is imported from `tauri-plugin-native-audio-api`. The full types, with comments, are in
-[`guest-js/dist-js/index.d.ts`](../guest-js/dist-js/index.d.ts).
+Everything is imported from `tauri-plugin-native-audio-api`. The full types, with comments, are in the source,
+[`guest-js/index.ts`](../guest-js/index.ts).
 
 - [Commands](#commands)
 - [State](#state)

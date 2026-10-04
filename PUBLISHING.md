@@ -11,6 +11,8 @@ From the repo root:
 cargo clippy --features desktop --all-targets   # no warnings
 cargo test --lib                                # the desktop player's queue and storage tests
 cargo check --no-default-features --features mobile
+npm install && npm run build                    # rebuild guest-js/dist-js from guest-js/index.ts
+git status guest-js/dist-js                     # the built files are committed: no changes left over
 npm pack --dry-run                              # the JavaScript package: guest-js/dist-js and the licenses
 ```
 

@@ -13,7 +13,7 @@
   "exports": {
     ".": {
       "types": "./guest-js/dist-js/index.d.ts",
-      "import": "./guest-js/dist-js/index.mjs"
+      "import": "./guest-js/dist-js/index.js"
     }
   },
   "repository": {
@@ -33,5 +33,12 @@
   ],
   "peerDependencies": {
     "@tauri-apps/api": ">=2.10.0"
+  },
+  "scripts": {
+    "build": "tsc -p guest-js"
+  },
+  "devDependencies": {
+    "@tauri-apps/api": "^2.12.0",
+    "typescript": "^7.0.2"
   }
 }
