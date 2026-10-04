@@ -109,10 +109,27 @@ export type NativeAudioQueue = {
 
 export type NativeAudioOptions = {
   /**
-   * Android: load the last queue automatically when the audio service starts with nothing loaded
-   * (Android Auto connecting, a headset play button). Default true. `restoreLastQueue()` works either way.
+   * Load the last queue automatically: on Android when the audio service starts with nothing loaded
+   * (Android Auto connecting, a headset play button); on desktop at the app's first `initialize()`
+   * (call it once the UI is ready). `paused` (the default) loads it where
+   * it was, `play` also starts playing, `off` leaves it to the app. `true` / `false` mean `paused` /
+   * `off`. `restoreLastQueue()` works either way.
+   *
+   * Android Auto can start playback by itself when it connects (its own "auto-resume media"
+   * setting), whatever this is set to: `paused` can't hold it back.
    */
-  resumeLastQueue?: boolean;
+  resumeLastQueue?: boolean | 'off' | 'paused' | 'play';
+  /**
+   * Previous (the app's, the notification's, the car's and the media keys') restarts the current
+   * track when it's past this many seconds, otherwise goes to the previous track. 0: previous always
+   * goes to the previous track. Default 3.
+   */
+  previousRestartsAfterSeconds?: number;
+  /**
+   * Next on the last track with repeat off: `nothing` (the default), or `first`: back to the first
+   * track of the play order, paused.
+   */
+  nextAtEnd?: 'nothing' | 'first';
   /**
    * Keep tracks added with `addToQueue` when the queue repeats (repeat mode `all`). Default false:
    * they play once and are dropped when the queue starts over.
@@ -293,6 +310,47 @@ export declare const skipTo: (index: number) => Promise<NativeAudioState>;
  * With an empty queue, it becomes the queue.
  */
 export declare const addToQueue: (items: NativeAudioQueueItem[], options?: { playNext?: boolean }) => Promise<NativeAudioState>;
+export type NativeAudioUpdateQueueOptions = {
+  /** The queue's playable folder (for `folder` tracked lists); unchanged when left out. */
+  sourceId?: string;
+  /**
+   * The playing track left the playlist: `finish` (default) lets it play to the end, then it leaves
+   * the queue; `skip` moves on to the next track right away.
+   */
+  removedCurrent?: 'finish' | 'skip';
+  /** Tracks no longer in the playlist: `remove` (default) them, or `keep` them in the queue where they are. */
+  removedItems?: 'remove' | 'keep';
+  /**
+   * New tracks: `inPlace` (default) at their place in the playlist (with shuffle on: somewhere in
+   * the rest of this pass), at the `end` (with shuffle on: the end of the play order, shuffled
+   * among themselves), or `next`: right after the playing track, in playlist order.
+   */
+  newItems?: 'inPlace' | 'end' | 'next';
+  /**
+   * The queue's list order: the `playlist`'s new order (default), or the `queue`'s current order
+   * with new tracks placed by `newItems` (in place: after the track before them in the playlist).
+   * With shuffle on, the play order is kept either way.
+   */
+  order?: 'playlist' | 'queue';
+};
+
+export type NativeAudioUpdateQueueResult = {
+  state: NativeAudioState;
+  /** Tracks new to the playlist. */
+  added: number;
+  /** Tracks no longer in the playlist (also when kept, or playing to the end). */
+  removed: number;
+};
+
+/**
+ * The playlist (or album) the queue plays changed, e.g. after a sync: `items` is its new content.
+ * Entries are matched by `id` (the same id twice: in order). What's still there keeps its place,
+ * also in a shuffled play order; new tracks are added and missing ones removed (see the options).
+ * Tracks added with `addToQueue` always stay, after the track they followed. The playing track's
+ * details (title, artwork) are updated without interrupting it. With an empty queue, `items`
+ * becomes the queue. Resolves with the state and how many tracks were added and removed.
+ */
+export declare const updateQueue: (items: NativeAudioQueueItem[], options?: NativeAudioUpdateQueueOptions) => Promise<NativeAudioUpdateQueueResult>;
 /** Removes the entry at a queue index. Removing the current track moves on to the next one. */
 export declare const removeFromQueue: (index: number) => Promise<NativeAudioState>;
 /**
@@ -314,7 +372,7 @@ export declare const seekTo: (position: number) => Promise<NativeAudioState>;
 export declare const setRate: (rate: number) => Promise<NativeAudioState>;
 /**
  * The player's own volume, 0 to 1 (a slider's position), on top of the system volume. Default 1.
- * What's heard follows the `volumeCurve` option.
+ * What's heard follows the `volumeCurve` option. Saved for the next run.
  */
 export declare const setVolume: (volume: number) => Promise<NativeAudioState>;
 /**
@@ -325,8 +383,8 @@ export declare const getOutputDevices: () => Promise<NativeAudioOutputDevices>;
 /**
  * Desktop: plays on this output (an `id` from `getOutputDevices`), or follows the system default
  * with null (the default; it also moves along when the default changes). When the chosen device goes
- * away, playback moves to the default and comes back once it's there again. Not saved: set it again
- * when the app starts. Android: does nothing.
+ * away, playback moves to the default and comes back once it's there again. Saved: the next run
+ * plays on it too. Android: does nothing.
  */
 export declare const setOutputDevice: (id: string | null) => Promise<NativeAudioOutputDevices>;
 /**
@@ -347,7 +405,7 @@ export declare const setRepeatMode: (mode: NativeAudioRepeatMode) => Promise<Nat
  * previous library. On iOS it's accepted but not used yet.
  */
 export declare const setLibrary: (library: NativeAudioLibrary) => Promise<void>;
-/** Saved on the device; only the options passed are changed. */
+/** Saved on the device (desktop too); only the options passed are changed. */
 export declare const setOptions: (options: NativeAudioOptions) => Promise<void>;
 /**
  * Extra buttons for Android Auto and the Android 13+ media controls (Android, with carSupport).

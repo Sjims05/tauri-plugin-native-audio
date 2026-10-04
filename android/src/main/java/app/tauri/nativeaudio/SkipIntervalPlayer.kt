@@ -35,6 +35,8 @@ internal class SkipIntervalPlayer(
     private val skipIntervalMs: () -> Long,
     private val onPlaylistReplaced: () -> Unit,
     private val keepQueueOnStop: () -> Boolean,
+    private val previousRestartAfterMs: () -> Long,
+    private val nextAtEndFirst: () -> Boolean,
 ) : ForwardingPlayer(player) {
     private val listeners = CopyOnWriteArraySet<Player.Listener>()
 
@@ -51,12 +53,15 @@ internal class SkipIntervalPlayer(
     override fun getAvailableCommands(): Player.Commands {
         val builder = super.getAvailableCommands().buildUpon().removeAll(*FIXED_SEEK_COMMANDS)
         if (skipIntervalMs() > 0L) builder.addAll(*SEEK_TO_TRACK_COMMANDS)
+        // Next goes back to the first track at the end: keep the button on the last track too.
+        if (nextAtEndFirst() && player.mediaItemCount > 0) builder.add(Player.COMMAND_SEEK_TO_NEXT)
         return builder.build()
     }
 
     override fun isCommandAvailable(command: Int): Boolean {
         if (command in FIXED_SEEK_COMMANDS) return false
         if (skipIntervalMs() > 0L && command in SEEK_TO_TRACK_COMMANDS) return true
+        if (command == Player.COMMAND_SEEK_TO_NEXT && nextAtEndFirst() && player.mediaItemCount > 0) return true
         return super.isCommandAvailable(command)
     }
 
@@ -70,7 +75,7 @@ internal class SkipIntervalPlayer(
     }
 
     override fun seekToPrevious() {
-        if (skipIntervalMs() > 0L) seekBy(-skipIntervalMs()) else super.seekToPrevious()
+        if (skipIntervalMs() > 0L) seekBy(-skipIntervalMs()) else TrackSkip.previous(player, previousRestartAfterMs())
     }
 
     override fun seekToPreviousMediaItem() {
@@ -78,7 +83,7 @@ internal class SkipIntervalPlayer(
     }
 
     override fun seekToNext() {
-        if (skipIntervalMs() > 0L) seekBy(skipIntervalMs()) else super.seekToNext()
+        if (skipIntervalMs() > 0L) seekBy(skipIntervalMs()) else TrackSkip.next(player, nextAtEndFirst())
     }
 
     override fun seekToNextMediaItem() {

@@ -17,6 +17,7 @@ export const next = async () => await call('next');
 export const previous = async () => await call('previous');
 export const skipTo = async (index) => await call('skip_to', { index });
 export const addToQueue = async (items, options = {}) => await call('add_to_queue', { items, playNext: options.playNext ?? false });
+export const updateQueue = async (items, options = {}) => await call('update_queue', { items, ...options });
 export const removeFromQueue = async (index) => await call('remove_from_queue', { index });
 export const moveInQueue = async (from, to) => await call('move_in_queue', { from, to });
 export const getQueue = async () => await call('get_queue');

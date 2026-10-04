@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::persist::{SavedItem, SavedQueue};
 use super::player::Item;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,6 +43,39 @@ pub struct Entry {
     pub added: bool,
 }
 
+/// Where updateQueue puts new songs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NewItems {
+    /// At their place in the playlist (with shuffle: somewhere in the rest of this pass).
+    #[default]
+    InPlace,
+    /// At the end (with shuffle: the end of the play order, shuffled among themselves).
+    End,
+    /// Right after the playing song, in playlist order.
+    Next,
+}
+
+/// How updateQueue treats what changed (the defaults: remove what left, new items in place, the
+/// playlist's order).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UpdateOptions {
+    /// Songs no longer in the playlist stay in the queue where they are.
+    pub keep_removed: bool,
+    pub new_items: NewItems,
+    /// Keep the queue's own list order instead of taking the playlist's new order (new songs are
+    /// placed by `new_items`; in place: after the song before them in the playlist).
+    pub keep_queue_order: bool,
+}
+
+/// What an update changed in the playlist.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UpdateSummary {
+    /// Songs new to the playlist.
+    pub added: usize,
+    /// Songs no longer in the playlist (also when kept, or playing to the end).
+    pub removed: usize,
+}
+
 pub struct Queue {
     entries: Vec<Entry>,
     /// List indices in play order.
@@ -51,6 +85,12 @@ pub struct Queue {
     pub repeat_added: bool,
     next_key: u64,
     rng: Rng,
+    /// The playable folder this queue was started from (setQueue's sourceId), for tracked lists.
+    pub source_id: Option<String>,
+    /// Goes up with every change, so the queue is saved only when it changed.
+    revision: u64,
+    /// Entries that left the playlist (update) while playing: dropped once playback moves on.
+    pending_removal: HashSet<u64>,
 }
 
 impl Default for Queue {
@@ -69,7 +109,58 @@ impl Queue {
             repeat_added: false,
             next_key: 1,
             rng,
+            source_id: None,
+            revision: 0,
+            pending_removal: HashSet::new(),
         }
+    }
+
+    fn set_order(&mut self, order: Vec<usize>) {
+        self.order = order;
+        self.revision += 1;
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn set_repeat(&mut self, repeat: Repeat) {
+        self.repeat = repeat;
+        self.revision += 1;
+    }
+
+    /// The queue to save, or None when it's empty.
+    pub fn snapshot(&self) -> Option<SavedQueue> {
+        (!self.entries.is_empty()).then(|| SavedQueue {
+            items: self.entries.iter().map(|e| SavedItem { item: e.item.clone(), added: e.added }).collect(),
+            order: self.order.clone(),
+            shuffle: self.shuffle,
+            repeat_mode: self.repeat.name().to_string(),
+            source_id: self.source_id.clone(),
+        })
+    }
+
+    /// Loads a saved queue; returns the key of the entry at `index`.
+    pub fn restore(&mut self, saved: SavedQueue, index: usize) -> Option<u64> {
+        let added: Vec<bool> = saved.items.iter().map(|i| i.added).collect();
+        let shuffle = saved.shuffle;
+        self.shuffle = false;
+        let key = self.set(saved.items.into_iter().map(|i| i.item).collect(), index);
+        for (entry, added) in self.entries.iter_mut().zip(added) {
+            entry.added = added;
+        }
+        self.shuffle = shuffle;
+        self.repeat = Repeat::parse(&saved.repeat_mode).unwrap_or(Repeat::Off);
+        self.source_id = saved.source_id;
+        // The saved order if it still fits; otherwise a new one (shuffled from the current entry).
+        let mut sorted = saved.order.clone();
+        sorted.sort_unstable();
+        if sorted == (0..self.entries.len()).collect::<Vec<_>>() {
+            self.set_order(saved.order);
+        } else {
+            self.set_shuffle(shuffle, key);
+        }
+        key
     }
 
     pub fn len(&self) -> usize {
@@ -119,12 +210,15 @@ impl Queue {
     /// Replaces the queue; returns the key of the entry at `start` (clamped).
     pub fn set(&mut self, items: Vec<Item>, start: usize) -> Option<u64> {
         self.entries = self.new_entries(items, false);
+        self.source_id = None;
+        self.pending_removal.clear();
         if self.entries.is_empty() {
-            self.order.clear();
+            self.set_order(Vec::new());
             return None;
         }
         let start = start.min(self.entries.len() - 1);
-        self.order = if self.shuffle { self.shuffled(Some(start), &HashSet::new()) } else { (0..self.entries.len()).collect() };
+        let order = if self.shuffle { self.shuffled(Some(start), &HashSet::new()) } else { (0..self.entries.len()).collect() };
+        self.set_order(order);
         self.key_at(start)
     }
 
@@ -132,7 +226,8 @@ impl Queue {
     pub fn set_shuffle(&mut self, on: bool, current: Option<u64>) {
         self.shuffle = on;
         let first = current.and_then(|k| self.index_of(k));
-        self.order = if on { self.shuffled(first, &HashSet::new()) } else { (0..self.entries.len()).collect() };
+        let order = if on { self.shuffled(first, &HashSet::new()) } else { (0..self.entries.len()).collect() };
+        self.set_order(order);
     }
 
     fn shuffled(&mut self, first: Option<usize>, recent: &HashSet<usize>) -> Vec<usize> {
@@ -157,6 +252,16 @@ impl Queue {
     /// entry of the play order to the first): drops the added entries (unless repeat_added) and, with
     /// shuffle, builds a new order for the next pass that starts with `to` (Android's handleWrapLocked).
     pub fn on_transition(&mut self, from: u64, to: u64) {
+        self.wrap(from, to);
+        // Left the playlist (update) while it played: gone now that it's over.
+        if from != to && self.pending_removal.remove(&from) {
+            if let Some(index) = self.index_of(from) {
+                self.remove_index(index);
+            }
+        }
+    }
+
+    fn wrap(&mut self, from: u64, to: u64) {
         if self.repeat != Repeat::All || self.order.len() < 2 {
             return;
         }
@@ -176,8 +281,136 @@ impl Queue {
             // `to` opened the old pass, so it's the least recently played one.
             let recent: HashSet<usize> = recent_tail(&self.order).into_iter().collect();
             let first = self.index_of(to);
-            self.order = self.shuffled(first, &recent);
+            let order = self.shuffled(first, &recent);
+            self.set_order(order);
         }
+    }
+
+    /// The playlist the queue plays changed: `items` is its new content. Entries are matched by item
+    /// id (the same id twice: in order), so what stays keeps its place in the play order, new items
+    /// are added and missing ones removed. Entries added with addToQueue stay, after the entry they
+    /// followed. The `current` entry keeps playing if it's no longer in the playlist, and leaves the
+    /// queue when playback moves on (`is_leaving`). See UpdateOptions for the alternatives.
+    pub fn update(&mut self, items: Vec<Item>, current: Option<u64>, options: UpdateOptions) -> UpdateSummary {
+        let old = std::mem::take(&mut self.entries);
+        let old_order: Vec<u64> = self.order.iter().map(|&i| old[i].key).collect();
+        let mut used = vec![false; old.len()];
+        // The new playlist: old entries (with the new details) where matched, new ones otherwise.
+        let mut playlist: Vec<Entry> = Vec::with_capacity(items.len());
+        let mut fresh: HashSet<u64> = HashSet::new();
+        for item in items {
+            let matched = item
+                .id
+                .and_then(|id| (0..old.len()).find(|&i| !used[i] && !old[i].added && old[i].item.id == Some(id)));
+            let key = match matched {
+                Some(i) => {
+                    used[i] = true;
+                    old[i].key
+                }
+                None => {
+                    let key = self.next_key;
+                    self.next_key += 1;
+                    fresh.insert(key);
+                    key
+                }
+            };
+            playlist.push(Entry { key, item, added: false });
+        }
+        let summary = UpdateSummary {
+            added: fresh.len(),
+            removed: (0..old.len()).filter(|&i| !used[i] && !old[i].added).count(),
+        };
+        // Old entries that stay although they're not in the playlist: added ones, the playing one
+        // (until it's over), and with keep_removed all of them.
+        let kept = |i: usize| !used[i] && (old[i].added || options.keep_removed || Some(old[i].key) == current);
+        let keep_entry = |entry: &Entry, pending: &mut HashSet<u64>| {
+            let mut entry = entry.clone();
+            if !entry.added && !options.keep_removed {
+                entry.added = true;
+                pending.insert(entry.key);
+            }
+            entry
+        };
+        let mut pending = std::mem::take(&mut self.pending_removal);
+        let (mut list, new): (Vec<Entry>, Vec<Entry>) = if options.keep_queue_order {
+            // The queue's order: old entries that stay, where they were.
+            let mut details: HashMap<u64, Entry> = playlist.iter().filter(|e| !fresh.contains(&e.key)).map(|e| (e.key, e.clone())).collect();
+            let mut list: Vec<Entry> = (0..old.len())
+                .filter_map(|i| if used[i] { details.remove(&old[i].key) } else if kept(i) { Some(keep_entry(&old[i], &mut pending)) } else { None })
+                .collect();
+            let mut new = Vec::new();
+            for (p, entry) in playlist.iter().enumerate() {
+                if !fresh.contains(&entry.key) {
+                    continue;
+                }
+                if options.new_items == NewItems::InPlace {
+                    // After the song before it in the playlist (that's in the queue).
+                    let at = (0..p).rev().find_map(|q| list.iter().position(|e| e.key == playlist[q].key)).map_or(0, |i| i + 1);
+                    list.insert(at, entry.clone());
+                } else {
+                    new.push(entry.clone());
+                }
+            }
+            (list, new)
+        } else {
+            // The playlist's order; kept entries after the nearest entry before them (in the old list).
+            let (mut list, new): (Vec<Entry>, Vec<Entry>) =
+                playlist.into_iter().partition(|e| options.new_items == NewItems::InPlace || !fresh.contains(&e.key));
+            for i in 0..old.len() {
+                if !kept(i) {
+                    continue;
+                }
+                let at = (0..i).rev().find_map(|j| list.iter().position(|e| e.key == old[j].key)).map_or(0, |p| p + 1);
+                let entry = keep_entry(&old[i], &mut pending);
+                list.insert(at, entry);
+            }
+            (list, new)
+        };
+        match options.new_items {
+            NewItems::InPlace => {}
+            NewItems::End => list.extend(new),
+            NewItems::Next => {
+                let at = current.and_then(|c| list.iter().position(|e| e.key == c)).map_or(list.len(), |p| p + 1);
+                list.splice(at..at, new);
+            }
+        }
+        pending.retain(|key| list.iter().any(|e| e.key == *key));
+        self.pending_removal = pending;
+        self.entries = list;
+
+        let order = if self.shuffle {
+            let index: HashMap<u64, usize> = self.entries.iter().enumerate().map(|(i, e)| (e.key, i)).collect();
+            let mut order: Vec<usize> = old_order.iter().filter_map(|k| index.get(k).copied()).collect();
+            let start = current.and_then(|c| order.iter().position(|&i| self.entries[i].key == c)).map_or(0, |p| p + 1);
+            // New entries in list order (so "next" keeps the playlist's order).
+            let mut new: Vec<usize> = (0..self.entries.len()).filter(|&i| fresh.contains(&self.entries[i].key)).collect();
+            match options.new_items {
+                NewItems::Next => {
+                    order.splice(start..start, new);
+                }
+                NewItems::End => {
+                    self.rng.shuffle(&mut new);
+                    order.extend(new);
+                }
+                NewItems::InPlace => {
+                    self.rng.shuffle(&mut new);
+                    for i in new {
+                        let at = start + self.rng.below(order.len() - start + 1);
+                        order.insert(at, i);
+                    }
+                }
+            }
+            order
+        } else {
+            (0..self.entries.len()).collect()
+        };
+        self.set_order(order);
+        summary
+    }
+
+    /// The entry left the playlist (update) and leaves the queue once playback moves on.
+    pub fn is_leaving(&self, key: u64) -> bool {
+        self.pending_removal.contains(&key)
     }
 
     /// The previous button's target: the entry before `key` in play order (repeat all wraps around).
@@ -211,7 +444,8 @@ impl Queue {
             _ => self.order.len(),
         };
         self.entries.splice(at..at, new);
-        self.order = order_insert(&self.order, at, count, play_position);
+        let order = order_insert(&self.order, at, count, play_position);
+        self.set_order(order);
         Some(first_key)
     }
 
@@ -224,7 +458,8 @@ impl Queue {
 
     fn remove_index(&mut self, index: usize) {
         self.entries.remove(index);
-        self.order = order_remove(&self.order, index);
+        let order = order_remove(&self.order, index);
+        self.set_order(order);
     }
 
     /// Moves the list entry at `from` to `to`. Without shuffle the play order is the list, so it
@@ -235,7 +470,8 @@ impl Queue {
         }
         let entry = self.entries.remove(from);
         self.entries.insert(to, entry);
-        self.order = if self.shuffle { order_move(&self.order, from, to) } else { (0..self.entries.len()).collect() };
+        let order = if self.shuffle { order_move(&self.order, from, to) } else { (0..self.entries.len()).collect() };
+        self.set_order(order);
         true
     }
 }
@@ -400,6 +636,10 @@ mod tests {
 
     fn item(name: &str, artist: &str) -> Item {
         Item { src: format!("{name}.mp3"), id: None, title: Some(name.into()), artist: Some(artist.into()), artwork_url: None }
+    }
+
+    fn with_id(name: &str, id: i64) -> Item {
+        Item { id: Some(id), ..item(name, name) }
     }
 
     fn queue(names: &[&str]) -> Queue {
@@ -605,6 +845,136 @@ mod tests {
         assert_eq!(q.order()[0], first_pass[0]); // the new pass starts with what's playing
         assert_ne!(q.order(), first_pass.as_slice());
         assert!(q.order()[1..=recent.len()].iter().all(|i| !recent.contains(i)));
+    }
+
+    #[test]
+    fn a_saved_queue_comes_back_the_same() {
+        let mut q = queue(&["A", "B", "C", "D"]);
+        q.set_shuffle(true, q.key_at(1));
+        q.set_repeat(Repeat::All);
+        q.add(vec![item("X", "x")], true, q.key_at(1));
+        q.source_id = Some("pl".into());
+        let saved = q.snapshot().unwrap();
+        let mut restored = Queue::new(Rng::new(1));
+        let key = restored.restore(saved, 2);
+        assert_eq!(restored.index_of(key.unwrap()), Some(2));
+        assert_eq!(titles(&restored), titles(&q));
+        assert_eq!(restored.repeat, Repeat::All);
+        assert!(restored.shuffle && restored.entries()[2].added);
+        assert_eq!(restored.source_id.as_deref(), Some("pl"));
+        assert!(Queue::new(Rng::new(1)).snapshot().is_none());
+    }
+
+    #[test]
+    fn update_keeps_what_stays_adds_new_and_removes_missing() {
+        let mut q = Queue::new(Rng::new(3));
+        q.set(["A", "B", "C", "D"].iter().enumerate().map(|(i, n)| with_id(n, i as i64)).collect(), 0);
+        let [a, b, c] = [q.key_at(0).unwrap(), q.key_at(1).unwrap(), q.key_at(2).unwrap()];
+        // B plays; the playlist is now A, C, E, B (D removed, E new, order changed).
+        q.update(vec![with_id("A", 0), with_id("C", 2), with_id("E", 4), with_id("B", 1)], Some(b), UpdateOptions::default());
+        assert_eq!(titles(&q), ["A", "C", "E", "B"]);
+        assert_eq!([q.key_at(0), q.key_at(1), q.key_at(3)], [Some(a), Some(c), Some(b)]);
+        assert_eq!(q.peek_next(b, true), None);
+    }
+
+    #[test]
+    fn update_lets_the_playing_entry_finish_when_it_left_the_playlist() {
+        let mut q = Queue::new(Rng::new(3));
+        q.set(["A", "B", "C"].iter().enumerate().map(|(i, n)| with_id(n, i as i64)).collect(), 0);
+        let b = q.key_at(1).unwrap();
+        q.update(vec![with_id("A", 0), with_id("C", 2)], Some(b), UpdateOptions::default());
+        assert_eq!(titles(&q), ["A", "B", "C"]); // B stays where it was while it plays
+        assert!(q.is_leaving(b));
+        let c = q.peek_next(b, true).unwrap();
+        q.on_transition(b, c);
+        assert_eq!(titles(&q), ["A", "C"]);
+    }
+
+    #[test]
+    fn update_keeps_added_entries_after_the_entry_they_followed() {
+        let mut q = Queue::new(Rng::new(3));
+        q.set(["A", "B", "C"].iter().enumerate().map(|(i, n)| with_id(n, i as i64)).collect(), 0);
+        q.add(vec![with_id("X", 9)], true, q.key_at(0)); // A X B C
+        q.update(vec![with_id("C", 2), with_id("A", 0), with_id("B", 1)], q.key_at(0), UpdateOptions::default());
+        assert_eq!(titles(&q), ["C", "A", "X", "B"]);
+        assert!(q.entries()[2].added);
+    }
+
+    #[test]
+    fn update_can_keep_removed_songs_and_put_new_ones_at_the_end() {
+        let mut q = Queue::new(Rng::new(3));
+        q.set(["A", "B", "C"].iter().enumerate().map(|(i, n)| with_id(n, i as i64)).collect(), 0);
+        let options = UpdateOptions { keep_removed: true, new_items: NewItems::End, ..Default::default() };
+        q.update(vec![with_id("N", 9), with_id("C", 2), with_id("A", 0)], q.key_at(0), options);
+        assert_eq!(titles(&q), ["C", "A", "B", "N"]); // B kept (after A), N at the end
+        assert!(!q.entries()[2].added && !q.is_leaving(q.key_at(2).unwrap()));
+
+        // With shuffle: new ones at the end of the play order.
+        let mut q = Queue::new(Rng::new(4));
+        q.set((0..6).map(|i| with_id(&format!("T{i}"), i)).collect(), 0);
+        q.set_shuffle(true, q.key_at(0));
+        let before: Vec<u64> = q.order().iter().map(|&i| q.entries()[i].key).collect();
+        let items = (0..6).map(|i| with_id(&format!("T{i}"), i)).chain([with_id("N1", 10), with_id("N2", 11)]).collect();
+        q.update(items, q.key_at(0), UpdateOptions { new_items: NewItems::End, ..Default::default() });
+        let after: Vec<u64> = q.order().iter().map(|&i| q.entries()[i].key).collect();
+        assert_eq!(after[..6], before[..]);
+    }
+
+    #[test]
+    fn update_can_play_new_songs_next_keep_the_queue_order_and_reports_changes() {
+        let mut q = Queue::new(Rng::new(3));
+        q.set(["A", "B", "C", "D"].iter().enumerate().map(|(i, n)| with_id(n, i as i64)).collect(), 0);
+        let b = q.key_at(1);
+        // The playlist is now D C N1 B N2 (A gone): keep the queue's order, new ones next.
+        let items = vec![with_id("D", 3), with_id("C", 2), with_id("N1", 10), with_id("B", 1), with_id("N2", 11)];
+        let summary = q.update(items, b, UpdateOptions { new_items: NewItems::Next, keep_queue_order: true, ..Default::default() });
+        assert_eq!(summary, UpdateSummary { added: 2, removed: 1 });
+        assert_eq!(titles(&q), ["B", "N1", "N2", "C", "D"]);
+
+        // Keep the queue's order, new ones in place: after the song before them in the playlist.
+        let mut q = Queue::new(Rng::new(3));
+        q.set(["A", "B", "C"].iter().enumerate().map(|(i, n)| with_id(n, i as i64)).collect(), 0);
+        let items = vec![with_id("N0", 9), with_id("C", 2), with_id("N1", 10), with_id("A", 0), with_id("B", 1)];
+        q.update(items, q.key_at(0), UpdateOptions { keep_queue_order: true, ..Default::default() });
+        assert_eq!(titles(&q), ["N0", "A", "B", "C", "N1"]);
+
+        // With shuffle, "next" puts them right after the playing song in play order.
+        let mut q = Queue::new(Rng::new(6));
+        q.set((0..5).map(|i| with_id(&format!("T{i}"), i)).collect(), 0);
+        q.set_shuffle(true, q.key_at(0));
+        let current = q.key_at(q.order()[2]);
+        let items = (0..5).map(|i| with_id(&format!("T{i}"), i)).chain([with_id("N1", 10), with_id("N2", 11)]).collect();
+        q.update(items, current, UpdateOptions { new_items: NewItems::Next, ..Default::default() });
+        let names = titles(&q);
+        assert_eq!(names[3..5], ["N1", "N2"]);
+    }
+
+    #[test]
+    fn update_matches_the_same_song_twice_in_order() {
+        let mut q = Queue::new(Rng::new(3));
+        q.set(vec![with_id("A", 1), with_id("B", 2), with_id("A", 1)], 0);
+        let keys: Vec<u64> = q.entries().iter().map(|e| e.key).collect();
+        q.update(vec![with_id("A", 1), with_id("A", 1)], None, UpdateOptions::default());
+        assert_eq!(q.entries().iter().map(|e| e.key).collect::<Vec<_>>(), vec![keys[0], keys[2]]);
+    }
+
+    #[test]
+    fn update_with_shuffle_keeps_the_order_and_puts_new_entries_after_the_current() {
+        let mut q = Queue::new(Rng::new(5));
+        q.set((0..10).map(|i| with_id(&format!("T{i}"), i)).collect(), 0);
+        q.set_shuffle(true, q.key_at(0));
+        let current = q.key_at(q.order()[4]).unwrap();
+        let before: Vec<u64> = q.order().iter().map(|&i| q.entries()[i].key).collect();
+        let items: Vec<Item> = (0..10).filter(|i| *i != 7).map(|i| with_id(&format!("T{i}"), i)).chain([with_id("N", 99)]).collect();
+        q.update(items, Some(current), UpdateOptions::default());
+        let after: Vec<u64> = q.order().iter().map(|&i| q.entries()[i].key).collect();
+        let removed: Vec<u64> = before.iter().copied().filter(|k| !after.contains(k)).collect();
+        assert_eq!(removed.len(), 1); // T7
+        let kept: Vec<u64> = after.iter().copied().filter(|k| before.contains(k)).collect();
+        assert_eq!(kept, before.iter().copied().filter(|k| after.contains(k)).collect::<Vec<_>>());
+        let new_at = after.iter().position(|k| !before.contains(k)).unwrap();
+        assert!(new_at > after.iter().position(|k| *k == current).unwrap());
+        assert_eq!(after.len(), 10);
     }
 
     #[test]

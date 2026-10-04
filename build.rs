@@ -8,6 +8,7 @@ const COMMANDS: &[&str] = &[
     "previous",
     "skip_to",
     "add_to_queue",
+    "update_queue",
     "remove_from_queue",
     "move_in_queue",
     "set_volume",

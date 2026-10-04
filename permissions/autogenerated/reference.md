@@ -13,6 +13,7 @@ Default permissions for the plugin
 - `allow-previous`
 - `allow-skip-to`
 - `allow-add-to-queue`
+- `allow-update-queue`
 - `allow-remove-from-queue`
 - `allow-move-in-queue`
 - `allow-set-volume`
@@ -1198,6 +1199,32 @@ Enables the skip_to command without any pre-configured scope.
 <td>
 
 Denies the skip_to command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:allow-update-queue`
+
+</td>
+<td>
+
+Enables the update_queue command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:deny-update-queue`
+
+</td>
+<td>
+
+Denies the update_queue command without any pre-configured scope.
 
 </td>
 </tr>

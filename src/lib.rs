@@ -35,7 +35,10 @@ pub fn init<R: Runtime>() -> TauriPlugin<R, Option<Config>> {
             #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
             {
                 use tauri::Manager;
-                _app.manage(desktop::player::DesktopAudio::new(Some(desktop::panel_config(_app.app_handle()))));
+                // Saved settings, the last queue, ...: in the app's data folder.
+                let data_dir = _app.path().app_data_dir().ok().map(|dir| dir.join("native-audio"));
+                // resumeLastQueue runs at the app's first initialize(), once its UI is ready.
+                _app.manage(desktop::player::DesktopAudio::new(Some(desktop::panel_config(_app.app_handle())), data_dir));
             }
             #[cfg(all(feature = "mobile", target_os = "android"))]
             {

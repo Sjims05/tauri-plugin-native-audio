@@ -33,6 +33,12 @@ pub struct Status {
     pub end_prepared: bool,
     /// A start() / stop() isn't done yet (the track is being opened).
     pub loading: bool,
+    /// Counts the plays: each track start (a new track, the same one again with repeat one, or
+    /// after start()) has its own number. None while nothing plays.
+    pub play: Option<u64>,
+    /// How many start() / stop() calls there were: a new `play` without one is the queue moving on
+    /// by itself (the previous track played to the end).
+    pub requests: u64,
     pub position_secs: f64,
     pub duration_secs: Option<f64>,
     pub playing: bool,
@@ -54,6 +60,8 @@ enum Command {
 /// beginning `offset_secs` into it.
 #[derive(Clone)]
 struct Marker {
+    /// Numbers the plays (see Status::play).
+    play: u64,
     start_frame: u64,
     track: Track,
     offset_secs: f64,
@@ -240,6 +248,8 @@ impl Engine {
             upcoming,
             end_prepared: self.shared.end_prepared.load(Ordering::SeqCst),
             loading: self.shared.done.load(Ordering::SeqCst) < self.shared.requested.load(Ordering::SeqCst),
+            play: current.as_ref().map(|m| m.play),
+            requests: self.shared.requested.load(Ordering::SeqCst),
             position_secs: current
                 .as_ref()
                 .map_or(0.0, |m| m.offset_secs + (played - m.start_frame) as f64 / self.sample_rate as f64),
@@ -405,6 +415,7 @@ struct Feeder {
     starting: Option<u64>,
     /// Decoding ended: "ended" once the rest of the audio is in the buffer.
     draining_end: bool,
+    plays: u64,
 }
 
 impl Feeder {
@@ -420,6 +431,7 @@ impl Feeder {
             frames_written: 0,
             starting: None,
             draining_end: false,
+            plays: 0,
         }
     }
 
@@ -515,7 +527,9 @@ impl Feeder {
                 self.write_pending();
             }
             Step::TrackStart(start) => {
+                self.plays += 1;
                 self.shared.markers.lock().unwrap().push_back(Marker {
+                    play: self.plays,
                     start_frame: start.output_frame,
                     track: start.track,
                     offset_secs: start.offset_secs,

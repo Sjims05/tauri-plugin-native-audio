@@ -5,6 +5,7 @@ pub mod convert;
 pub mod decode;
 pub mod engine;
 pub mod media_controls;
+pub mod persist;
 pub mod pipeline;
 pub mod player;
 pub mod queue;

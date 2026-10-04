@@ -1,12 +1,14 @@
 //! The plugin's commands on desktop, with the same names, arguments and results as on Android, so
 //! the JavaScript API works unchanged. They hand over to the player (player.rs). Android-only
-//! features (the Android Auto library, car buttons, tracked lists, ...) are accepted and do nothing yet.
+//! features (the Android Auto library, car buttons) are accepted and do nothing.
 
 use serde_json::{json, Value};
 use tauri::ipc::Channel;
 use tauri::State;
 
-use super::player::{DesktopAudio, Item, Result};
+use super::persist::{ListConfig, ListEntry};
+use super::player::{DesktopAudio, Item, ProgressEntry, Result};
+use super::queue::{NewItems, UpdateOptions};
 
 fn not_yet(feature: &str) -> String {
     format!("{feature} isn't available on desktop yet")
@@ -38,7 +40,7 @@ pub fn set_source(
     artist: Option<String>,
     artwork_url: Option<String>,
 ) -> Result<Value> {
-    audio.load(vec![Item { src, id, title, artist, artwork_url }], 0, 0.0)
+    audio.load(vec![Item { src, id, title, artist, artwork_url }], 0, 0.0, None)
 }
 
 #[tauri::command]
@@ -47,8 +49,9 @@ pub fn set_queue(
     items: Vec<Item>,
     start_index: Option<usize>,
     start_position: Option<f64>,
+    source_id: Option<String>,
 ) -> Result<Value> {
-    audio.load(items, start_index.unwrap_or(0), start_position.unwrap_or(0.0))
+    audio.load(items, start_index.unwrap_or(0), start_position.unwrap_or(0.0), source_id)
 }
 
 #[tauri::command]
@@ -96,6 +99,41 @@ pub fn add_to_queue(audio: State<'_, DesktopAudio>, items: Vec<Item>, play_next:
     audio.add_to_queue(items, play_next.unwrap_or(false))
 }
 
+/// `removed_current`: "finish" (default) or "skip"; `removed_items`: "remove" (default) or "keep";
+/// `new_items`: "inPlace" (default), "end" or "next"; `order`: "playlist" (default) or "queue".
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub fn update_queue(
+    audio: State<'_, DesktopAudio>,
+    items: Vec<Item>,
+    source_id: Option<String>,
+    removed_current: Option<String>,
+    removed_items: Option<String>,
+    new_items: Option<String>,
+    order: Option<String>,
+) -> Result<Value> {
+    let pick = |value: Option<String>, name: &str, default: &str, other: &str| -> Result<bool> {
+        match value.as_deref().unwrap_or(default) {
+            v if v == default => Ok(false),
+            v if v == other => Ok(true),
+            v => Err(format!("{name} must be {default} or {other}, not \"{v}\"")),
+        }
+    };
+    let skip_removed_current = pick(removed_current, "removedCurrent", "finish", "skip")?;
+    let new_items = match new_items.as_deref().unwrap_or("inPlace") {
+        "inPlace" => NewItems::InPlace,
+        "end" => NewItems::End,
+        "next" => NewItems::Next,
+        other => return Err(format!("newItems must be inPlace, end or next, not \"{other}\"")),
+    };
+    let options = UpdateOptions {
+        keep_removed: pick(removed_items, "removedItems", "remove", "keep")?,
+        new_items,
+        keep_queue_order: pick(order, "order", "playlist", "queue")?,
+    };
+    audio.update_queue(items, source_id, options, skip_removed_current)
+}
+
 #[tauri::command]
 pub fn remove_from_queue(audio: State<'_, DesktopAudio>, index: usize) -> Result<Value> {
     audio.remove_from_queue(index)
@@ -117,8 +155,8 @@ pub fn get_queue(audio: State<'_, DesktopAudio>) -> Value {
 }
 
 #[tauri::command]
-pub fn restore_last_queue() -> Option<Value> {
-    None
+pub fn restore_last_queue(audio: State<'_, DesktopAudio>) -> Result<Option<Value>> {
+    audio.restore_last_queue()
 }
 
 #[tauri::command]
@@ -132,14 +170,28 @@ pub fn set_skip_interval(audio: State<'_, DesktopAudio>, seconds: f64) -> Value 
     audio.set_skip_interval(seconds)
 }
 
-/// Desktop uses repeatAddedTracks, mediaControls and volumeCurve; the rest are Android's.
+/// Desktop uses repeatAddedTracks, trackProgress, mediaControls, volumeCurve, resumeLastQueue,
+/// previousRestartsAfterSeconds and nextAtEnd (saved, like on Android); the rest are Android's.
+/// Tauri passes each option as its own argument.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn set_options(
     audio: State<'_, DesktopAudio>,
     repeat_added_tracks: Option<bool>,
+    track_progress: Option<bool>,
     media_controls: Option<bool>,
     volume_curve: Option<String>,
+    resume_last_queue: Option<Value>,
+    previous_restarts_after_seconds: Option<f64>,
+    next_at_end: Option<String>,
 ) -> Result<()> {
+    audio.set_skip_rules(previous_restarts_after_seconds, next_at_end.as_deref())?;
+    if let Some(mode) = resume_last_queue {
+        audio.set_resume_last_queue(mode)?;
+    }
+    if let Some(on) = track_progress {
+        audio.set_track_progress(on);
+    }
     if let Some(curve) = volume_curve {
         audio.set_volume_curve(&curve)?;
     }
@@ -186,8 +238,8 @@ pub fn cancel_sleep_timer(audio: State<'_, DesktopAudio>) -> Value {
     audio.state()
 }
 
-// ---- Android-only (Android Auto, car buttons), or not on desktop yet: accepted so the same app
-// code runs on every platform.
+// ---- Android-only (Android Auto, car buttons): accepted so the same app code runs on every
+// platform. Then what's saved: playback events, tracked lists, item progress, the checkpoint.
 
 #[tauri::command]
 pub fn set_library() {}
@@ -207,51 +259,59 @@ pub fn get_control_presses() -> Value {
 pub fn acknowledge_control_presses() {}
 
 #[tauri::command]
-pub fn get_playback_events() -> Value {
-    json!({ "events": [] })
+pub fn get_playback_events(audio: State<'_, DesktopAudio>) -> Value {
+    audio.playback_events()
 }
 
 #[tauri::command]
-pub fn acknowledge_playback_events() {}
-
-#[tauri::command]
-pub fn set_tracked_lists() {}
-
-#[tauri::command]
-pub fn get_tracked_list() -> Value {
-    json!({ "entries": [] })
+pub fn acknowledge_playback_events(audio: State<'_, DesktopAudio>, ids: Vec<String>) {
+    audio.acknowledge_playback_events(&ids);
 }
 
 #[tauri::command]
-pub fn set_tracked_list(entries: Value) -> Value {
-    json!({ "entries": entries })
+pub fn set_tracked_lists(audio: State<'_, DesktopAudio>, lists: Vec<ListConfig>) -> Result<()> {
+    audio.set_tracked_lists(lists)
 }
 
 #[tauri::command]
-pub fn get_tracked_list_changes() -> Value {
-    json!({ "changes": [] })
+pub fn get_tracked_list(audio: State<'_, DesktopAudio>, id: String) -> Value {
+    audio.tracked_list(&id)
 }
 
 #[tauri::command]
-pub fn acknowledge_tracked_list_changes() {}
-
-#[tauri::command]
-pub fn get_item_progress() -> Value {
-    json!({ "entries": [] })
+pub fn set_tracked_list(audio: State<'_, DesktopAudio>, id: String, entries: Vec<ListEntry>, merge: Option<bool>) -> Result<Value> {
+    audio.set_tracked_list(&id, entries, merge.unwrap_or(false))
 }
 
 #[tauri::command]
-pub fn set_item_progress(entries: Value) -> Value {
-    json!({ "entries": entries })
+pub fn get_tracked_list_changes(audio: State<'_, DesktopAudio>) -> Value {
+    audio.tracked_list_changes()
 }
 
 #[tauri::command]
-pub fn get_progress_checkpoint() -> Option<Value> {
-    None
+pub fn acknowledge_tracked_list_changes(audio: State<'_, DesktopAudio>, ids: Vec<String>) {
+    audio.acknowledge_tracked_list_changes(&ids);
 }
 
 #[tauri::command]
-pub fn clear_progress_checkpoint() {}
+pub fn get_item_progress(audio: State<'_, DesktopAudio>, item_ids: Option<Vec<i64>>) -> Value {
+    audio.item_progress(item_ids)
+}
+
+#[tauri::command]
+pub fn set_item_progress(audio: State<'_, DesktopAudio>, entries: Vec<ProgressEntry>, merge: Option<bool>) -> Result<Value> {
+    audio.set_item_progress(entries, merge.unwrap_or(false))
+}
+
+#[tauri::command]
+pub fn get_progress_checkpoint(audio: State<'_, DesktopAudio>) -> Option<Value> {
+    audio.progress_checkpoint()
+}
+
+#[tauri::command]
+pub fn clear_progress_checkpoint(audio: State<'_, DesktopAudio>) {
+    audio.clear_progress_checkpoint();
+}
 
 /// Every command, for the plugin's invoke handler.
 pub fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
@@ -274,6 +334,7 @@ pub fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + 
         set_shuffle,
         set_repeat_mode,
         add_to_queue,
+        update_queue,
         remove_from_queue,
         move_in_queue,
         set_volume,

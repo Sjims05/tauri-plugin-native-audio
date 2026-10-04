@@ -129,14 +129,31 @@ class AddToQueueArgs {
 }
 
 @InvokeArg
+class UpdateQueueArgs {
+    var items: Array<SetSourceArgs>? = null
+    var sourceId: String? = null
+    /** "finish" (default) or "skip". */
+    var removedCurrent: String? = null
+    /** "remove" (default) or "keep". */
+    var removedItems: String? = null
+    /** "inPlace" (default), "end" or "next". */
+    var newItems: String? = null
+    /** "playlist" (default) or "queue". */
+    var order: String? = null
+}
+
+@InvokeArg
 class SetOptionsArgs {
-    var resumeLastQueue: Boolean? = null
+    /** true / false, or "off" / "paused" / "play". */
+    var resumeLastQueue: Any? = null
     var repeatAddedTracks: Boolean? = null
     var pausedKeepAliveMinutes: Double? = null
     var keepAliveWhileCarConnected: Boolean? = null
     var trackProgress: Boolean? = null
     var keepQueueOnStop: Boolean? = null
     var volumeCurve: String? = null
+    var previousRestartsAfterSeconds: Double? = null
+    var nextAtEnd: String? = null
 }
 
 @InvokeArg
@@ -258,7 +275,7 @@ object NativeAudioRuntime {
     @Volatile
     private var skipIntervalMs = 0L
     private var shuffleEnabled = false
-    /** setVolume (a slider's position); kept here so a new player (service restart) gets it too. */
+    /** setVolume (a slider's position), saved in PluginSettings; loaded in ensure. */
     private var volume = 1f
     /** The volume curve (setOptions volumeCurve) as a power: what's heard is volume^volumeExponent. */
     private var volumeExponent = 2
@@ -276,6 +293,8 @@ object NativeAudioRuntime {
     private var repeatMode = Player.REPEAT_MODE_OFF
     // The shuffle order handed to ExoPlayer, kept to detect the wrap to a new pass.
     private var shuffleIndices = IntArray(0)
+    /** The item that left the playlist (updateQueue) while it played: removed once playback moves on. */
+    private var pendingRemoval: MediaItem? = null
     private var lastMediaItemIndex = C.INDEX_UNSET
     private var lastQueuePositionSavedAtMs = 0L
     // While a saved queue is being restored: don't save half-restored state, and don't let
@@ -381,6 +400,7 @@ object NativeAudioRuntime {
             synchronized(lock) {
                 pendingSeekState = null
                 player?.let { handleWrapLocked(it, reason) }
+                player?.let { dropPendingRemovalLocked(it) }
                 saveQueuePositionLocked(force = true)
             }
             refreshControls()
@@ -472,6 +492,7 @@ object NativeAudioRuntime {
             appContext = ctx
             skipIntervalMs = PluginSettings.skipIntervalMs(ctx)
             volumeExponent = volumeExponentOf(PluginSettings.volumeCurve(ctx))
+            volume = PluginSettings.volume(ctx)
 
             val audioAttributes = AudioAttributes.Builder()
                 .setUsage(C.USAGE_MEDIA)
@@ -501,6 +522,8 @@ object NativeAudioRuntime {
                 skipIntervalMs = { skipIntervalMs },
                 onPlaylistReplaced = ::onSessionPlaylistReplaced,
                 keepQueueOnStop = { PluginSettings.keepQueueOnStop(ctx) },
+                previousRestartAfterMs = { PluginSettings.previousRestartAfterMs(ctx) },
+                nextAtEndFirst = { PluginSettings.nextAtEndFirst(ctx) },
             )
             sessionPlayer = skipPlayer
             // A library session, so Android Auto can browse the setLibrary tree (when the app enables
@@ -590,10 +613,9 @@ object NativeAudioRuntime {
         synchronized(lock) {
             ensure(context)
             val exoPlayer = player ?: return
-            if (!exoPlayer.hasNextMediaItem()) return@synchronized
             pendingSeekState = null
+            if (!TrackSkip.next(exoPlayer, PluginSettings.nextAtEndFirst(context))) return@synchronized
             lastError = null
-            exoPlayer.seekToNextMediaItem()
             exoPlayer.prepare()
         }
         emitState()
@@ -605,9 +627,9 @@ object NativeAudioRuntime {
             val exoPlayer = player ?: return
             pendingSeekState = null
             lastError = null
-            // Same rule as the notification button: restart the current track when more than
-            // ~3s in (ExoPlayer's maxSeekToPreviousPosition), otherwise go to the previous one.
-            exoPlayer.seekToPrevious()
+            // Same rule as the notification button: restart the current track when it's past
+            // previousRestartsAfterSeconds (default 3), otherwise go to the previous one.
+            TrackSkip.previous(exoPlayer, PluginSettings.previousRestartAfterMs(context))
             exoPlayer.prepare()
         }
         emitState()
@@ -678,6 +700,7 @@ object NativeAudioRuntime {
         synchronized(lock) {
             ensure(context)
             volume = value.coerceIn(0.0, 1.0).toFloat()
+            PluginSettings.setVolume(context, volume)
             // During a sleep timer's fade-out the fade sets it.
             if (!sleepFading) player?.volume = gainLocked()
         }
@@ -726,6 +749,119 @@ object NativeAudioRuntime {
             lastMediaItemIndex = exoPlayer.currentMediaItemIndex
         }
         emitState()
+    }
+
+    /**
+     * The playlist the queue plays changed: [items] is its new content (see QueueUpdate). The current
+     * track keeps playing untouched: everything around it is replaced. With an empty queue, [items]
+     * becomes the queue.
+     */
+    fun updateQueue(
+        context: Context,
+        items: List<SetSourceArgs>,
+        sourceId: String?,
+        skipRemovedCurrent: Boolean = false,
+        keepRemoved: Boolean = false,
+        newItems: String = "inPlace",
+        keepQueueOrder: Boolean = false,
+    ): Pair<Int, Int> {
+        synchronized(lock) {
+            ensure(context)
+            if (sourceId != null) queueSourceId = sourceId
+        }
+        val empty = synchronized(lock) { player?.mediaItemCount == 0 }
+        if (empty) {
+            addToQueue(context, items, playNext = false)
+            return items.size to 0
+        }
+        val changes = synchronized(lock) {
+            val exoPlayer = player ?: return 0 to 0
+            val count = exoPlayer.mediaItemCount
+            val current = exoPlayer.currentMediaItemIndex
+            val oldItems = (0 until count).map { exoPlayer.getMediaItemAt(it) }
+            val plan = QueueUpdate.plan(
+                oldIds = oldItems.map { it.mediaId.toLongOrNull() },
+                oldAdded = oldItems.map { isAddedToQueue(it) },
+                oldOrder = playOrderLocked(exoPlayer),
+                current = current,
+                newIds = items.map { it.id },
+                shuffle = exoPlayer.shuffleModeEnabled,
+                keepRemoved = keepRemoved,
+                newItems = newItems,
+                keepQueueOrder = keepQueueOrder,
+            )
+            fun build(item: Int) = items[item].let { buildMediaItem(it.src!!.trim(), it.id, it.title, it.artist, it.artworkUrl, addedToQueue = false) }
+            val currentAt = plan.list.indexOfFirst {
+                (it is QueueUpdate.Slot.Matched && it.old == current) || (it is QueueUpdate.Slot.Kept && it.old == current)
+            }
+            val mediaItems = plan.list.map {
+                when (it) {
+                    // The playing item itself stays, so playback isn't interrupted.
+                    is QueueUpdate.Slot.Matched -> if (it.old == current) oldItems[current] else build(it.item)
+                    is QueueUpdate.Slot.New -> build(it.item)
+                    is QueueUpdate.Slot.Kept -> oldItems[it.old]
+                }
+            }
+            restoringQueue = true
+            try {
+                exoPlayer.removeMediaItems(current + 1, count)
+                exoPlayer.removeMediaItems(0, current)
+                exoPlayer.addMediaItems(0, mediaItems.subList(0, currentAt))
+                exoPlayer.addMediaItems(mediaItems.subList(currentAt + 1, mediaItems.size))
+                if (exoPlayer.shuffleModeEnabled) setShuffleIndicesLocked(exoPlayer, plan.order)
+                // The playing item's details (title, cover) may have changed: same file, so this
+                // doesn't interrupt it.
+                (plan.list[currentAt] as? QueueUpdate.Slot.Matched)?.let { matched ->
+                    val updated = build(matched.item)
+                    if (updated.localConfiguration?.uri == oldItems[current].localConfiguration?.uri &&
+                        updated.mediaMetadata != oldItems[current].mediaMetadata
+                    ) {
+                        exoPlayer.replaceMediaItem(exoPlayer.currentMediaItemIndex, updated)
+                    }
+                }
+            } finally {
+                restoringQueue = false
+            }
+            pendingRemoval = if (plan.currentLeft) oldItems[current] else null
+            lastMediaItemIndex = exoPlayer.currentMediaItemIndex
+            if (plan.currentLeft && skipRemovedCurrent) {
+                // Moving on drops it (dropPendingRemovalLocked); with nothing after it, it goes now.
+                if (exoPlayer.hasNextMediaItem()) {
+                    exoPlayer.seekToNextMediaItem()
+                } else {
+                    pendingRemoval = null
+                    val oldOrder = playOrderLocked(exoPlayer)
+                    val index = exoPlayer.currentMediaItemIndex
+                    exoPlayer.removeMediaItem(index)
+                    if (exoPlayer.shuffleModeEnabled && exoPlayer.mediaItemCount > 0) {
+                        setShuffleIndicesLocked(exoPlayer, QueueOrder.remove(oldOrder, index))
+                    }
+                    lastMediaItemIndex = exoPlayer.currentMediaItemIndex
+                }
+            }
+            saveQueueLocked()
+            plan.added to plan.removed
+        }
+        emitState()
+        return changes
+    }
+
+    /** Playback moved on from an item that left the playlist (updateQueue): remove it now. */
+    private fun dropPendingRemovalLocked(exoPlayer: ExoPlayer) {
+        val item = pendingRemoval ?: return
+        val index = (0 until exoPlayer.mediaItemCount).firstOrNull { exoPlayer.getMediaItemAt(it) === item }
+        if (index == null) {
+            pendingRemoval = null
+            return
+        }
+        if (index == exoPlayer.currentMediaItemIndex) return // repeat one: still playing
+        pendingRemoval = null
+        val oldOrder = playOrderLocked(exoPlayer)
+        exoPlayer.removeMediaItem(index)
+        if (exoPlayer.shuffleModeEnabled && exoPlayer.mediaItemCount > 0) {
+            setShuffleIndicesLocked(exoPlayer, QueueOrder.remove(oldOrder, index))
+        }
+        lastMediaItemIndex = exoPlayer.currentMediaItemIndex
     }
 
     /** Returns false when [index] is outside the queue. Removing the current track moves on to the next. */
@@ -809,15 +945,17 @@ object NativeAudioRuntime {
 
     /**
      * When the audio service starts with nothing loaded (Android Auto connecting, a headset play
-     * button with the app closed), load the last queue so it's ready to continue.
+     * button with the app closed), load the last queue so it's ready to continue, and with
+     * resumeLastQueue "play" also play it.
      */
     fun restoreLastQueueIfIdle(context: Context) {
-        if (!PluginSettings.resumeLastQueue(context)) return
+        val mode = PluginSettings.resumeMode(context)
+        if (mode == "off") return
         val idle = synchronized(lock) {
             ensure(context)
             player?.mediaItemCount == 0
         }
-        if (idle) restoreLastQueue(context)
+        if (idle && restoreLastQueue(context) && mode == "play") play(context)
     }
 
     /** For onPlaybackResumption: the saved queue, whose modes are applied once the session sets it. */
@@ -930,18 +1068,25 @@ object NativeAudioRuntime {
 
     fun setOptions(
         context: Context,
-        resumeLastQueue: Boolean?,
+        resumeLastQueue: Any?,
         repeatAddedTracks: Boolean?,
         pausedKeepAliveMinutes: Double?,
         keepAliveWhileCarConnected: Boolean?,
         trackProgress: Boolean?,
         keepQueueOnStop: Boolean?,
         volumeCurve: String?,
+        previousRestartsAfterSeconds: Double?,
+        nextAtEnd: String?,
     ) {
         require(pausedKeepAliveMinutes == null || (pausedKeepAliveMinutes.isFinite() && pausedKeepAliveMinutes >= 0)) {
             "pausedKeepAliveMinutes must be >= 0"
         }
-        PluginSettings.setOptions(context, resumeLastQueue, repeatAddedTracks, pausedKeepAliveMinutes, keepAliveWhileCarConnected, trackProgress, keepQueueOnStop, volumeCurve)
+        PluginSettings.setOptions(
+            context, resumeLastQueue, repeatAddedTracks, pausedKeepAliveMinutes, keepAliveWhileCarConnected, trackProgress,
+            keepQueueOnStop, volumeCurve, previousRestartsAfterSeconds, nextAtEnd,
+        )
+        // The next button may be available on the last track now (nextAtEnd).
+        if (nextAtEnd != null) synchronized(lock) { sessionPlayer }?.let { tickHandler.post { it.notifyAvailableCommandsChanged() } }
         if (volumeCurve != null) {
             synchronized(lock) {
                 volumeExponent = volumeExponentOf(volumeCurve)
@@ -1873,6 +2018,45 @@ class NativeAudioPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     @Command
+    fun updateQueue(invoke: Invoke) {
+        val args = invoke.parseArgs(UpdateQueueArgs::class.java)
+        val items = args.items?.toList().orEmpty()
+        if (items.any { it.src.isNullOrBlank() }) {
+            invoke.reject("every item requires src")
+            return
+        }
+
+        fun pick(value: String?, name: String, default: String, other: String): Boolean? = when (value ?: default) {
+            default -> false
+            other -> true
+            else -> {
+                invoke.reject("$name must be $default or $other")
+                null
+            }
+        }
+        val skipRemovedCurrent = pick(args.removedCurrent, "removedCurrent", "finish", "skip") ?: return
+        val keepRemoved = pick(args.removedItems, "removedItems", "remove", "keep") ?: return
+        val keepQueueOrder = pick(args.order, "order", "playlist", "queue") ?: return
+        val newItems = args.newItems ?: "inPlace"
+        if (newItems !in setOf("inPlace", "end", "next")) {
+            invoke.reject("newItems must be inPlace, end or next")
+            return
+        }
+
+        runCatching {
+            NativeAudioRuntime.updateQueue(activity.applicationContext, items, args.sourceId, skipRemovedCurrent, keepRemoved, newItems, keepQueueOrder)
+        }.onSuccess { (added, removed) ->
+            val result = JSObject()
+            result.put("state", toJsObject(NativeAudioRuntime.getState(activity.applicationContext)))
+            result.put("added", added)
+            result.put("removed", removed)
+            invoke.resolve(result)
+        }.onFailure {
+            invoke.reject(it.message ?: "updateQueue failed")
+        }
+    }
+
+    @Command
     fun removeFromQueue(invoke: Invoke) {
         val index = invoke.parseArgs(SkipToArgs::class.java).index
         if (index == null) {
@@ -1964,6 +2148,8 @@ class NativeAudioPlugin(private val activity: Activity) : Plugin(activity) {
                 args.trackProgress,
                 args.keepQueueOnStop,
                 args.volumeCurve,
+                args.previousRestartsAfterSeconds,
+                args.nextAtEnd,
             )
         }.onSuccess {
             invoke.resolve()

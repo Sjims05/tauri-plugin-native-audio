@@ -10,6 +10,7 @@ permissions = [
   "allow-previous",
   "allow-skip-to",
   "allow-add-to-queue",
+  "allow-update-queue",
   "allow-remove-from-queue",
   "allow-move-in-queue",
   "allow-set-volume",
