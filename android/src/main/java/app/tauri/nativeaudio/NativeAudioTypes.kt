@@ -149,6 +149,8 @@ class NativeAudioQueue(
     val currentIndex: Int,
     /** Queue indices in the order they play (the shuffle order when shuffle is on). */
     val playOrder: IntArray,
+    /** The playable folder (playlist, album) the queue was started from, if any. */
+    val sourceId: String? = null,
 )
 
 @InvokeArg

@@ -112,6 +112,17 @@ pub fn update_queue(
     new_items: Option<String>,
     order: Option<String>,
 ) -> Result<Value> {
+    let (options, skip_removed_current) = update_options(removed_current, removed_items, new_items, order)?;
+    audio.update_queue(items, source_id, options, skip_removed_current)
+}
+
+/// update_queue's options from their names; and whether a playing track that left skips right away.
+pub(crate) fn update_options(
+    removed_current: Option<String>,
+    removed_items: Option<String>,
+    new_items: Option<String>,
+    order: Option<String>,
+) -> Result<(UpdateOptions, bool)> {
     let pick = |value: Option<String>, name: &str, default: &str, other: &str| -> Result<bool> {
         match value.as_deref().unwrap_or(default) {
             v if v == default => Ok(false),
@@ -131,7 +142,7 @@ pub fn update_queue(
         new_items,
         keep_queue_order: pick(order, "order", "playlist", "queue")?,
     };
-    audio.update_queue(items, source_id, options, skip_removed_current)
+    Ok((options, skip_removed_current))
 }
 
 #[tauri::command]

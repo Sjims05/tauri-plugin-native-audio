@@ -361,6 +361,7 @@ class NativeAudioPlugin(private val activity: Activity) : Plugin(activity) {
             payload.put("items", items)
             payload.put("currentIndex", queue.currentIndex)
             payload.put("playOrder", playOrder)
+            payload.put("sourceId", queue.sourceId)
             invoke.resolve(payload)
         }.onFailure {
             invoke.reject(it.message ?: "getQueue failed")

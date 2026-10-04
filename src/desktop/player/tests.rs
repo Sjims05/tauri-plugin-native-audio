@@ -216,6 +216,26 @@ fn update_queue_keeps_the_playing_track_going() {
 }
 
 #[test]
+fn the_rust_api_reads_the_queue_and_its_source_and_updates_it() {
+    // What app.native_audio() does on desktop: queue() and update_queue() through the API's types.
+    let h = Harness::new("rust-api");
+    let items = vec![h.track("a", 10_000, 1, 1), h.track("b", 10_000, 2, 2)];
+    h.audio.load(items.clone(), 0, 0.0, Some("album:1".into())).unwrap();
+    let queue: crate::Queue = serde_json::from_value(h.audio.queue()).unwrap();
+    assert_eq!((queue.items.len(), queue.current_index, queue.source_id.as_deref()), (2, 0, Some("album:1")));
+    assert_eq!(queue.items[1].id, Some(2));
+
+    let (options, skip) = crate::desktop::commands::update_options(None, Some("keep".into()), Some("end".into()), None).unwrap();
+    assert!(!skip && options.keep_removed);
+    assert!(crate::desktop::commands::update_options(Some("later".into()), None, None, None).is_err());
+    let result = h.audio.update_queue(vec![items[0].clone()], Some("album:2".into()), options, skip).unwrap();
+    let result: crate::UpdateQueueResult = serde_json::from_value(result).unwrap();
+    assert_eq!(result, crate::UpdateQueueResult { added: 0, removed: 1 });
+    let queue: crate::Queue = serde_json::from_value(h.audio.queue()).unwrap();
+    assert_eq!((queue.items.len(), queue.source_id.as_deref()), (2, Some("album:2")), "b kept (removedItems: keep)");
+}
+
+#[test]
 fn the_queue_and_settings_come_back_after_a_restart() {
     let dir;
     {

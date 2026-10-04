@@ -290,6 +290,7 @@ impl DesktopAudio {
             "items": items,
             "currentIndex": state["queueIndex"],
             "playOrder": queue.order(),
+            "sourceId": queue.source_id,
         })
     }
 

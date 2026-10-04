@@ -196,6 +196,25 @@ The Android Auto types (`NativeAudioLibrary`, `NativeAudioLibraryItem`, `NativeA
 `NativeAudioControls`, `NativeAudioControlButton`, `NativeAudioControlIcon`, `NativeAudioControlPress`) are
 described in [Android Auto](android-auto.md) and in `index.d.ts`.
 
+## From Rust
+
+The app's own Rust code can read the queue and update it too, for work that runs while the UI may be asleep
+(e.g. a library scan keeping the playing queue in step):
+
+```rust
+use tauri_plugin_native_audio::{NativeAudioExt, QueueItem, UpdateQueueOptions};
+
+let queue = app.native_audio().get_queue()?; // items, current_index, play_order, source_id
+if queue.source_id.as_deref() == Some("album:12") {
+    let result = app.native_audio().update_queue(items, UpdateQueueOptions { new_items: Some("end".into()), ..Default::default() })?;
+    println!("{} added, {} removed", result.added, result.removed);
+}
+```
+
+`QueueItem`, `UpdateQueueOptions` and the result are the JavaScript API's shapes. Desktop: the Rust player
+itself. Android: the plugin's native code; call from a background thread (it waits for the answer). iOS: not
+supported yet.
+
 ## Validation and errors
 
 Commands reject (with a message saying what's wrong) when:

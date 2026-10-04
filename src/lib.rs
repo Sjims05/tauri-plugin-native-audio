@@ -4,6 +4,9 @@ use tauri::{
     Runtime,
 };
 
+mod api;
+pub use api::{NativeAudio, NativeAudioExt, Queue, QueueItem, UpdateQueueOptions, UpdateQueueResult};
+
 /// The desktop player. Public so its test program (examples/desktop_play.rs) can drive it directly.
 #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
 #[doc(hidden)]
@@ -39,10 +42,13 @@ pub fn init<R: Runtime>() -> TauriPlugin<R, Option<Config>> {
                 let data_dir = _app.path().app_data_dir().ok().map(|dir| dir.join("native-audio"));
                 // resumeLastQueue runs at the app's first initialize(), once its UI is ready.
                 _app.manage(desktop::player::DesktopAudio::new(Some(desktop::panel_config(_app.app_handle())), data_dir));
+                _app.manage(api::NativeAudio::desktop(_app.app_handle().clone()));
             }
             #[cfg(all(feature = "mobile", target_os = "android"))]
             {
-                let _ = _api.register_android_plugin(PLUGIN_IDENTIFIER, "NativeAudioPlugin")?;
+                use tauri::Manager;
+                let handle = _api.register_android_plugin(PLUGIN_IDENTIFIER, "NativeAudioPlugin")?;
+                _app.manage(api::NativeAudio::mobile(handle));
             }
             #[cfg(all(feature = "mobile", target_os = "ios"))]
             {

@@ -113,6 +113,8 @@ export type NativeAudioQueue = {
   currentIndex: number;
   /** Queue indices in the order they play: the shuffle order when shuffle is on. */
   playOrder: number[];
+  /** The playable folder (playlist, album) the queue was started from (setQueue's `sourceId`, or picked in Android Auto). */
+  sourceId?: string | null;
 };
 
 export type NativeAudioOptions = {

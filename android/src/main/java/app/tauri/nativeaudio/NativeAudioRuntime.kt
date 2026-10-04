@@ -715,6 +715,7 @@ object NativeAudioRuntime {
                 items = (0 until count).map { exoPlayer.getMediaItemAt(it) },
                 currentIndex = if (count > 0) exoPlayer.currentMediaItemIndex else -1,
                 playOrder = playOrderLocked(exoPlayer),
+                sourceId = queueSourceId,
             )
         }
     }
