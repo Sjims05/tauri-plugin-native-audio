@@ -91,6 +91,8 @@ pub struct Queue {
     revision: u64,
     /// Entries that left the playlist (update) while playing: dropped once playback moves on.
     pending_removal: HashSet<u64>,
+    /// What the engine was told follows each entry (`next_for_engine`), newest last.
+    told_engine: Vec<(u64, Option<u64>)>,
 }
 
 impl Default for Queue {
@@ -112,6 +114,7 @@ impl Queue {
             source_id: None,
             revision: 0,
             pending_removal: HashSet::new(),
+            told_engine: Vec::new(),
         }
     }
 
@@ -212,6 +215,7 @@ impl Queue {
         self.entries = self.new_entries(items, false);
         self.source_id = None;
         self.pending_removal.clear();
+        self.told_engine.clear();
         if self.entries.is_empty() {
             self.set_order(Vec::new());
             return None;
@@ -246,6 +250,27 @@ impl Queue {
             return self.key_at(self.order[pos + 1]);
         }
         (self.repeat == Repeat::All).then(|| self.key_at(self.order[0])).flatten()
+    }
+
+    /// What follows `key` when it ends, for the engine (it asks a couple of seconds before the end).
+    /// The answer is remembered, so a later edit knows what the engine prepared (`told_engine_after`).
+    pub fn next_for_engine(&mut self, key: u64) -> Option<u64> {
+        let next = self.peek_next(key, true);
+        self.told_engine.push((key, next));
+        if self.told_engine.len() > 16 {
+            self.told_engine.remove(0);
+        }
+        next
+    }
+
+    /// What the engine was last told follows `key`, or None when it hasn't asked yet.
+    pub fn told_engine_after(&self, key: u64) -> Option<Option<u64>> {
+        self.told_engine.iter().rev().find(|(k, _)| *k == key).map(|(_, next)| *next)
+    }
+
+    /// The engine restarts `key` (it will ask what follows again).
+    pub fn forget_told_engine(&mut self, key: u64) {
+        self.told_engine.retain(|(k, _)| *k != key);
     }
 
     /// Playback moved from `from` to `to`. When that started the queue over (repeat all, from the last

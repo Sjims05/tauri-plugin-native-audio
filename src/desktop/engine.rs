@@ -14,7 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, SizedSample};
+use cpal::{FromSample, Sample, SizedSample};
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use super::pipeline::{NextTrack, Pipeline, Step, Track};
@@ -109,31 +109,16 @@ pub struct Engine {
     output_thread: Option<thread::JoinHandle<()>>,
     feeder_thread: Option<thread::JoinHandle<()>>,
     stop_output: Sender<()>,
+    /// Tests: the output, pulled by hand instead of by an audio device.
+    #[cfg(test)]
+    manual: Option<Arc<Mutex<Renderer>>>,
 }
 
 impl Engine {
     /// Opens the output device with id `device` (from output_devices), or follows the system default
     /// when None or not there. `next_track` tells what follows each track.
     pub fn new(next_track: NextTrack, device: Option<&str>) -> Result<Self, String> {
-        let shared = Arc::new(Shared {
-            playing: AtomicBool::new(false),
-            volume_bits: AtomicU32::new(1.0f32.to_bits()),
-            frames_played: AtomicU64::new(0),
-            underrun_frames: AtomicU64::new(0),
-            end_prepared: AtomicBool::new(true),
-            ended: AtomicBool::new(true),
-            end_frame: AtomicU64::new(0),
-            flush_gen: AtomicU64::new(0),
-            flush_ack: AtomicU64::new(0),
-            markers: Mutex::new(VecDeque::new()),
-            error: Mutex::new(None),
-            requested: AtomicU64::new(0),
-            done: AtomicU64::new(0),
-            device_lost: AtomicBool::new(false),
-            pause_after_current: AtomicBool::new(false),
-            pause_at_frame: AtomicU64::new(u64::MAX),
-            paused_after_current: AtomicBool::new(false),
-        });
+        let shared = new_shared();
 
         // The device's own rate and channels; tracks are converted to it.
         let host = cpal::default_host();
@@ -172,12 +157,7 @@ impl Engine {
             .map_err(|e| e.to_string())?;
         ready_rx.recv().map_err(|_| "audio output thread stopped".to_string())??;
 
-        let (commands, command_rx) = mpsc::channel();
-        let feeder_shared = shared.clone();
-        let feeder_thread = thread::Builder::new()
-            .name("native-audio-feeder".into())
-            .spawn(move || Feeder::new(producer, feeder_shared, sample_rate, channels, next_track).run(command_rx))
-            .map_err(|e| e.to_string())?;
+        let (commands, feeder_thread) = start_feeder(producer, shared.clone(), sample_rate, channels, next_track)?;
 
         Ok(Self {
             shared,
@@ -188,7 +168,63 @@ impl Engine {
             output_thread: Some(output_thread),
             feeder_thread: Some(feeder_thread),
             stop_output,
+            #[cfg(test)]
+            manual: None,
         })
+    }
+
+    /// Tests: an engine without an audio device, whose output is pulled with `pull`.
+    #[cfg(test)]
+    pub fn new_manual(next_track: NextTrack, sample_rate: u32, channels: usize) -> Result<Self, String> {
+        let shared = new_shared();
+        let capacity = (sample_rate as f32 * BUFFER_SECONDS) as usize * channels;
+        let (producer, consumer) = RingBuffer::<f32>::new(capacity);
+        let renderer = Arc::new(Mutex::new(Renderer::new(consumer, shared.clone(), channels)));
+        // Seeks and skips wait for the output to drop what's buffered: answer that like an output would.
+        let (stop_output, stop_rx) = mpsc::channel::<()>();
+        let flusher = renderer.clone();
+        let output_thread = thread::spawn(move || loop {
+            flusher.lock().unwrap().drop_flushed();
+            match stop_rx.recv_timeout(Duration::from_millis(1)) {
+                Err(RecvTimeoutError::Timeout) => {}
+                _ => return,
+            }
+        });
+        let (commands, feeder_thread) = start_feeder(producer, shared.clone(), sample_rate, channels, next_track)?;
+        Ok(Self {
+            shared,
+            commands,
+            sample_rate,
+            channels,
+            device_id: None,
+            output_thread: Some(output_thread),
+            feeder_thread: Some(feeder_thread),
+            stop_output,
+            manual: Some(renderer),
+        })
+    }
+
+    /// Tests: the next `frames` of output, waiting (up to a few seconds) until they're decoded or
+    /// nothing more comes. Paused: silence, and the position doesn't move, like a real output.
+    #[cfg(test)]
+    pub fn pull(&self, frames: usize) -> Vec<f32> {
+        let renderer = self.manual.as_ref().expect("a manual engine");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let ready = {
+                let renderer = renderer.lock().unwrap();
+                renderer.consumer.slots() >= frames * self.channels
+                    || self.shared.end_prepared.load(Ordering::SeqCst)
+                    || !self.shared.playing.load(Ordering::SeqCst)
+            };
+            if ready || Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        let mut out = vec![0.0f32; frames * self.channels];
+        renderer.lock().unwrap().render(&mut out);
+        out
     }
 
     /// Plays `track` from `position` seconds on (once playing: play() / pause() don't change),
@@ -220,11 +256,13 @@ impl Engine {
     /// The output device stopped working: open a new Engine.
     /// Pause exactly where the current track ends (the next one is then ready at its start), or not.
     pub fn pause_after_current(&self, on: bool) {
+        // Under the markers lock, like the feeder adding a track start: one of the two always sees
+        // the other's change.
+        let markers = self.shared.markers.lock().unwrap();
         self.shared.pause_after_current.store(on, Ordering::SeqCst);
         let at = if on {
             // The next track may be prepared already.
             let played = self.shared.frames_played.load(Ordering::SeqCst);
-            let markers = self.shared.markers.lock().unwrap();
             markers.iter().find(|m| m.start_frame > played).map_or(u64::MAX, |m| m.start_frame)
         } else {
             u64::MAX
@@ -337,6 +375,28 @@ fn find_device(host: &cpal::Host, id: &str) -> Option<cpal::Device> {
     host.output_devices().ok()?.find(|d| d.id().is_ok_and(|d| d.to_string() == id))
 }
 
+fn new_shared() -> Arc<Shared> {
+    Arc::new(Shared {
+        playing: AtomicBool::new(false),
+        volume_bits: AtomicU32::new(1.0f32.to_bits()),
+        frames_played: AtomicU64::new(0),
+        underrun_frames: AtomicU64::new(0),
+        end_prepared: AtomicBool::new(true),
+        ended: AtomicBool::new(true),
+        end_frame: AtomicU64::new(0),
+        flush_gen: AtomicU64::new(0),
+        flush_ack: AtomicU64::new(0),
+        markers: Mutex::new(VecDeque::new()),
+        error: Mutex::new(None),
+        requested: AtomicU64::new(0),
+        done: AtomicU64::new(0),
+        device_lost: AtomicBool::new(false),
+        pause_after_current: AtomicBool::new(false),
+        pause_at_frame: AtomicU64::new(u64::MAX),
+        paused_after_current: AtomicBool::new(false),
+    })
+}
+
 impl Drop for Engine {
     fn drop(&mut self) {
         let _ = self.commands.send(Command::Shutdown);
@@ -370,61 +430,15 @@ fn build_stream(
 fn output_stream<T: SizedSample + FromSample<f32> + Send + 'static>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    mut consumer: Consumer<f32>,
+    consumer: Consumer<f32>,
     shared: Arc<Shared>,
 ) -> Result<cpal::Stream, String> {
-    let channels = config.channels as usize;
-    let mut seen_flush = 0u64;
-    let silence = T::from_sample(0.0f32);
     let error_shared = shared.clone();
+    let mut renderer = Renderer::new(consumer, shared, config.channels as usize);
     device
         .build_output_stream(
             *config,
-            move |data: &mut [T], _| {
-                // Seek / skip: drop what's buffered for the old position.
-                let flush = shared.flush_gen.load(Ordering::SeqCst);
-                if flush != seen_flush {
-                    let available = consumer.slots();
-                    if let Ok(chunk) = consumer.read_chunk(available) {
-                        chunk.commit_all();
-                    }
-                    seen_flush = flush;
-                    shared.flush_ack.store(flush, Ordering::SeqCst);
-                }
-                if !shared.playing.load(Ordering::SeqCst) {
-                    data.fill(silence);
-                    return;
-                }
-                let volume = f32::from_bits(shared.volume_bits.load(Ordering::SeqCst));
-                // The end-of-track sleep timer: stop right where the next track starts.
-                let pause_at = shared.pause_at_frame.load(Ordering::SeqCst);
-                let until_pause = pause_at.saturating_sub(shared.frames_played.load(Ordering::SeqCst));
-                let mut played = 0u64;
-                let mut missing = 0u64;
-                for frame in data.chunks_mut(channels) {
-                    if played >= until_pause {
-                        frame.fill(silence);
-                    } else if consumer.slots() >= channels {
-                        for sample in frame.iter_mut() {
-                            *sample = T::from_sample(consumer.pop().unwrap_or(0.0) * volume);
-                        }
-                        played += 1;
-                    } else {
-                        frame.fill(silence);
-                        missing += 1;
-                    }
-                }
-                shared.frames_played.fetch_add(played, Ordering::SeqCst);
-                if played >= until_pause {
-                    shared.playing.store(false, Ordering::SeqCst);
-                    shared.pause_at_frame.store(u64::MAX, Ordering::SeqCst);
-                    shared.pause_after_current.store(false, Ordering::SeqCst);
-                    shared.paused_after_current.store(true, Ordering::SeqCst);
-                }
-                if missing > 0 && !shared.ended.load(Ordering::SeqCst) {
-                    shared.underrun_frames.fetch_add(missing, Ordering::SeqCst);
-                }
-            },
+            move |data: &mut [T], _| renderer.render(data),
             move |e: cpal::Error| match e.kind() {
                 // A glitch, or the system moved the stream itself: it keeps playing.
                 cpal::ErrorKind::Xrun | cpal::ErrorKind::DeviceChanged => {}
@@ -436,6 +450,89 @@ fn output_stream<T: SizedSample + FromSample<f32> + Send + 'static>(
             None,
         )
         .map_err(|e| e.to_string())
+}
+
+/// What the output does with each buffer it has to fill: the buffered audio at the volume, silence
+/// while paused, stopping exactly at the end-of-track sleep timer's frame, and dropping what's
+/// buffered when a seek or skip asks for it.
+struct Renderer {
+    consumer: Consumer<f32>,
+    shared: Arc<Shared>,
+    channels: usize,
+    seen_flush: u64,
+}
+
+impl Renderer {
+    fn new(consumer: Consumer<f32>, shared: Arc<Shared>, channels: usize) -> Self {
+        Self { consumer, shared, channels, seen_flush: 0 }
+    }
+
+    /// Seek / skip: drop what's buffered for the old position.
+    fn drop_flushed(&mut self) {
+        let flush = self.shared.flush_gen.load(Ordering::SeqCst);
+        if flush != self.seen_flush {
+            let available = self.consumer.slots();
+            if let Ok(chunk) = self.consumer.read_chunk(available) {
+                chunk.commit_all();
+            }
+            self.seen_flush = flush;
+            self.shared.flush_ack.store(flush, Ordering::SeqCst);
+        }
+    }
+
+    fn render<T: Sample + FromSample<f32>>(&mut self, data: &mut [T]) {
+        let shared = self.shared.clone();
+        let silence = T::from_sample(0.0f32);
+        self.drop_flushed();
+        if !shared.playing.load(Ordering::SeqCst) {
+            data.fill(silence);
+            return;
+        }
+        let volume = f32::from_bits(shared.volume_bits.load(Ordering::SeqCst));
+        // The end-of-track sleep timer: stop right where the next track starts.
+        let pause_at = shared.pause_at_frame.load(Ordering::SeqCst);
+        let until_pause = pause_at.saturating_sub(shared.frames_played.load(Ordering::SeqCst));
+        let mut played = 0u64;
+        let mut missing = 0u64;
+        for frame in data.chunks_mut(self.channels) {
+            if played >= until_pause {
+                frame.fill(silence);
+            } else if self.consumer.slots() >= self.channels {
+                for sample in frame.iter_mut() {
+                    *sample = T::from_sample(self.consumer.pop().unwrap_or(0.0) * volume);
+                }
+                played += 1;
+            } else {
+                frame.fill(silence);
+                missing += 1;
+            }
+        }
+        shared.frames_played.fetch_add(played, Ordering::SeqCst);
+        if played >= until_pause {
+            shared.playing.store(false, Ordering::SeqCst);
+            shared.pause_at_frame.store(u64::MAX, Ordering::SeqCst);
+            shared.pause_after_current.store(false, Ordering::SeqCst);
+            shared.paused_after_current.store(true, Ordering::SeqCst);
+        }
+        if missing > 0 && !shared.ended.load(Ordering::SeqCst) {
+            shared.underrun_frames.fetch_add(missing, Ordering::SeqCst);
+        }
+    }
+}
+
+fn start_feeder(
+    producer: Producer<f32>,
+    shared: Arc<Shared>,
+    sample_rate: u32,
+    channels: usize,
+    next_track: NextTrack,
+) -> Result<(Sender<Command>, thread::JoinHandle<()>), String> {
+    let (commands, command_rx) = mpsc::channel();
+    let feeder = thread::Builder::new()
+        .name("native-audio-feeder".into())
+        .spawn(move || Feeder::new(producer, shared, sample_rate, channels, next_track).run(command_rx))
+        .map_err(|e| e.to_string())?;
+    Ok((commands, feeder))
 }
 
 /// Moves the pipeline's output into the ring buffer.
@@ -567,21 +664,23 @@ impl Feeder {
                 self.write_pending();
             }
             Step::TrackStart(start) => {
-                // The end-of-track sleep timer pauses where the next track starts (not the first
-                // track after a start(): that's the one playing).
-                if self.shared.pause_after_current.load(Ordering::SeqCst)
-                    && start.output_frame > self.shared.frames_played.load(Ordering::SeqCst)
-                {
+                self.plays += 1;
+                let mut markers = self.shared.markers.lock().unwrap();
+                // The end-of-track sleep timer pauses where the next track starts: any track start but
+                // the first after a start() (that's the one playing). Even if the output already got
+                // there (decoding fell behind), it stops right at the start. Checked under the markers
+                // lock, like pause_after_current, so a timer set right now isn't missed.
+                if self.shared.pause_after_current.load(Ordering::SeqCst) && self.starting.is_none() {
                     let _ = self.shared.pause_at_frame.compare_exchange(u64::MAX, start.output_frame, Ordering::SeqCst, Ordering::SeqCst);
                 }
-                self.plays += 1;
-                self.shared.markers.lock().unwrap().push_back(Marker {
+                markers.push_back(Marker {
                     play: self.plays,
                     start_frame: start.output_frame,
                     track: start.track,
                     offset_secs: start.offset_secs,
                     duration_secs: start.duration_secs,
                 });
+                drop(markers);
                 self.confirm_start();
             }
             Step::Error(e) => *self.shared.error.lock().unwrap() = Some(e),

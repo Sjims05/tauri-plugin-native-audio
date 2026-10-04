@@ -9,7 +9,7 @@ From the repo root:
 
 ```bash
 cargo clippy --features desktop --all-targets   # no warnings
-cargo test --lib                                # the desktop player's queue and storage tests
+cargo test --lib                                # the desktop player: queue, storage and end-to-end playback (no audio device needed)
 cargo check --no-default-features --features mobile
 npm install && npm run build                    # rebuild guest-js/dist-js from guest-js/index.ts
 git status guest-js/dist-js                     # the built files are committed: no changes left over

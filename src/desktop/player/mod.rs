@@ -97,6 +97,9 @@ struct Inner {
     /// resumeLastQueue ran (at the first initialize).
     resumed: bool,
     sleep: Option<SleepTimer>,
+    /// Tests: play through Engine::new_manual (this rate and channel count) instead of a device.
+    #[cfg(test)]
+    manual_output: Option<(u32, usize)>,
 }
 
 /// The desktop player, managed as Tauri state. Locks, in this order only: `inner`, `queue`,
@@ -115,6 +118,8 @@ mod media_keys;
 mod saved;
 mod settings;
 mod sleep;
+#[cfg(test)]
+mod tests;
 
 pub use saved::ProgressEntry;
 
@@ -146,6 +151,8 @@ impl DesktopAudio {
                 saved_queue_revision: queue.revision(),
                 resumed: false,
                 sleep: None,
+                #[cfg(test)]
+                manual_output: None,
             })),
             queue: Arc::new(Mutex::new(queue)),
             persist: Arc::new(Mutex::new(persist)),
@@ -167,6 +174,12 @@ impl DesktopAudio {
         if inner.engine.is_some() {
             return Ok(());
         }
+        #[cfg(test)]
+        let engine = match inner.manual_output {
+            Some((rate, channels)) => Engine::new_manual(self.next_track(), rate, channels)?,
+            None => Engine::new(self.next_track(), inner.device.as_deref())?,
+        };
+        #[cfg(not(test))]
         let engine = Engine::new(self.next_track(), inner.device.as_deref())?;
         engine.set_volume(inner.volume_curve.gain(inner.volume));
         engine.pause_after_current(matches!(inner.sleep, Some(SleepTimer::EndOfTrack)));
@@ -201,8 +214,8 @@ impl DesktopAudio {
     fn next_track(&self) -> NextTrack {
         let queue = self.queue.clone();
         Arc::new(move |key| {
-            let queue = queue.lock().unwrap();
-            queue.peek_next(key, true).and_then(|next| track_of(&queue, next))
+            let mut queue = queue.lock().unwrap();
+            queue.next_for_engine(key).and_then(|next| track_of(&queue, next))
         })
     }
 
@@ -354,22 +367,19 @@ fn start_key(engine: &Engine, queue: &Queue, key: Option<u64>) {
     }
 }
 
-/// After the queue changed: if the engine already prepared a different track to follow the playing
-/// one (it does so a couple of seconds before the end), plays on from the same spot so the right
-/// one follows. Otherwise there's nothing to do: the engine asks the queue when it gets there.
-fn resync(engine: &Engine, queue: &Queue) {
+/// After the queue changed: if the engine was already told a different track follows the playing
+/// one (it asks a couple of seconds before the end), plays on from the same spot so the right one
+/// follows. Otherwise there's nothing to do: the engine asks the queue when it gets there.
+fn resync(engine: &Engine, queue: &mut Queue) {
     let status = engine.status();
     let Some(playing) = status.key else { return };
     if status.ended {
         return;
     }
-    let prepared = match (status.upcoming, status.end_prepared) {
-        (Some(upcoming), _) => Some(upcoming),
-        (None, true) => None,
-        (None, false) => return,
-    };
-    if queue.peek_next(playing, true) != prepared {
+    let Some(told) = queue.told_engine_after(playing) else { return };
+    if queue.peek_next(playing, true) != told {
         if let Some(track) = track_of(queue, playing) {
+            queue.forget_told_engine(playing);
             engine.start(track, status.position_secs);
         }
     }

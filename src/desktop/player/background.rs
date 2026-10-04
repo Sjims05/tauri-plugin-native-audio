@@ -20,6 +20,11 @@ impl DesktopAudio {
             }
             inner.panel = Some(panel);
         }
+        // Tests drive the loop themselves (tick).
+        #[cfg(test)]
+        if inner.manual_output.is_some() {
+            return Ok(());
+        }
         let me = self.clone();
         thread::Builder::new()
             .name("native-audio-state".into())
@@ -29,26 +34,28 @@ impl DesktopAudio {
     }
 
     pub(super) fn background_loop(self) {
-        let mut last_state = String::new();
-        let mut last_sent = Instant::now();
-        let mut last_device_check = Instant::now();
-        let mut panel = PanelSync::default();
-        let mut tracking = Tracking::default();
+        let mut state = LoopState::default();
         loop {
             thread::sleep(Duration::from_millis(100));
-            for (event, payload) in self.track(&mut tracking) {
-                self.emit(event, &payload);
-            }
-            let poll = last_device_check.elapsed() >= DEVICE_CHECK_EVERY;
-            if poll {
-                last_device_check = Instant::now();
-            }
-            self.check_device(poll);
-            let state = self.state();
-            self.sync_panel(&mut panel, &state);
-            // Sent when something changes, and every 250 ms while playing (the position).
-            self.check_sleep_timer();
-            let summary = format!(
+            self.tick(&mut state);
+        }
+    }
+
+    /// One round of the background loop.
+    pub(super) fn tick(&self, l: &mut LoopState) {
+        for (event, payload) in self.track(&mut l.tracking) {
+            self.emit(event, &payload);
+        }
+        let poll = l.last_device_check.elapsed() >= DEVICE_CHECK_EVERY;
+        if poll {
+            l.last_device_check = Instant::now();
+        }
+        self.check_device(poll);
+        self.check_sleep_timer();
+        let state = self.state();
+        self.sync_panel(&mut l.panel, &state);
+        // Sent when something changes, and every 250 ms while playing (the position).
+        let summary = format!(
                 "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 state["status"],
                 state["queueIndex"],
@@ -61,12 +68,11 @@ impl DesktopAudio {
                 state["sleepTimerEndOfTrack"],
                 state["error"]
             );
-            let playing = state["isPlaying"].as_bool() == Some(true);
-            if summary != last_state || (playing && last_sent.elapsed() >= Duration::from_millis(250)) {
-                self.emit(STATE_EVENT, &state);
-                last_state = summary;
-                last_sent = Instant::now();
-            }
+        let playing = state["isPlaying"].as_bool() == Some(true);
+        if summary != l.last_state || (playing && l.last_sent.elapsed() >= Duration::from_millis(250)) {
+            self.emit(STATE_EVENT, &state);
+            l.last_state = summary;
+            l.last_sent = Instant::now();
         }
     }
 
@@ -109,7 +115,7 @@ impl DesktopAudio {
                 if let (Some(from), Some(to)) = (t.key, status.key) {
                     if from != to {
                         queue.on_transition(from, to);
-                        resync(engine, &queue);
+                        resync(engine, &mut queue);
                     }
                 }
                 let item_id = status.key.and_then(|k| queue.entry(k)).and_then(|e| e.item.id);
@@ -215,6 +221,27 @@ impl DesktopAudio {
             if inner.device == chosen {
                 self.reopen_engine(&mut inner);
             }
+        }
+    }
+}
+
+/// What the background loop keeps between rounds.
+pub(super) struct LoopState {
+    last_state: String,
+    last_sent: Instant,
+    last_device_check: Instant,
+    panel: PanelSync,
+    tracking: Tracking,
+}
+
+impl Default for LoopState {
+    fn default() -> Self {
+        Self {
+            last_state: String::new(),
+            last_sent: Instant::now(),
+            last_device_check: Instant::now(),
+            panel: PanelSync::default(),
+            tracking: Tracking::default(),
         }
     }
 }
