@@ -244,3 +244,32 @@ fn the_queue_and_settings_come_back_after_a_restart() {
     let expected = &as_output(30_000, 2)[position * CHANNELS..(position + 2_000) * CHANNELS];
     assert_audio(&out, expected, "b from where it was");
 }
+
+#[test]
+fn the_volume_follows_its_curve() {
+    let mut h = Harness::new("volume");
+    // A constant full-scale-ish signal, so the output's level is easy to read.
+    let item = h.track("tone", 200_000, 0, 1);
+    h.audio.load(vec![item], 0, 0.0, None).unwrap();
+    h.audio.play().unwrap();
+    let level = |h: &mut Harness| {
+        let out = h.play_frames(2_000);
+        let input = as_output(200_000, 0);
+        // Output vs input energy over the same frames is the gain (position doesn't matter for the ratio).
+        let peak_out = out.iter().fold(0f32, |m, s| m.max(s.abs()));
+        let peak_in = input.iter().take(out.len()).fold(0f32, |m, s| m.max(s.abs()));
+        peak_out / peak_in
+    };
+    for (curve, power) in [("linear", 1), ("quadratic", 2), ("cubic", 3)] {
+        h.audio.set_volume_curve(curve).unwrap();
+        for step in [10, 25, 50, 60, 75, 90, 100] {
+            let v = step as f64 / 100.0;
+            h.audio.set_volume(v);
+            h.play_frames(1_000); // let the change apply
+            let gain = level(&mut h) as f64;
+            let expected = v.powi(power);
+            assert!((gain - expected).abs() < 0.01, "{curve} at {step}%: gain {gain:.3}, expected {expected:.3}");
+            println!("{curve:>9} {step:>3}%: gain {gain:.3} ({:+.1} dB)", 20.0 * gain.max(1e-6).log10());
+        }
+    }
+}
