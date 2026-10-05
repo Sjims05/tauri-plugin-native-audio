@@ -211,6 +211,9 @@ if queue.source_id.as_deref() == Some("album:12") {
 }
 ```
 
+Also `get_state()` (what's playing, where, playing or not, shuffle, repeat), `set_queue(items, start_index,
+start_position, source_id)` (loads a queue, paused), `set_shuffle(enabled)` and `set_repeat_mode(mode)`.
+
 For Android Auto, `app.native_audio().set_library(&library)` sends the browsable library (`Library`,
 `LibraryFolder`, `LibraryItem`, `LibraryChild`), like `setLibrary`; elsewhere it's accepted and not used.
 

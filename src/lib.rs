@@ -6,8 +6,8 @@ use tauri::{
 
 mod api;
 pub use api::{
-    Library, LibraryChild, LibraryFolder, LibraryItem, NativeAudio, NativeAudioExt, Queue, QueueItem, UpdateQueueOptions,
-    UpdateQueueResult,
+    Library, LibraryChild, LibraryFolder, LibraryItem, NativeAudio, NativeAudioExt, PlayerState, Queue, QueueItem,
+    UpdateQueueOptions, UpdateQueueResult,
 };
 
 /// The desktop player. Public so its test program (examples/desktop_play.rs) can drive it directly.

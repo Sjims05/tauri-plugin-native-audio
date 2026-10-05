@@ -236,6 +236,19 @@ fn the_rust_api_reads_the_queue_and_its_source_and_updates_it() {
 }
 
 #[test]
+fn the_rust_api_reads_the_state_and_loads_a_queue_paused() {
+    let h = Harness::new("rust-api-state");
+    let items = vec![h.track("a", 10_000, 1, 1), h.track("b", 10_000, 2, 2)];
+    h.audio.load(items, 1, 0.5, None).unwrap();
+    let state: crate::PlayerState = serde_json::from_value(h.audio.state()).unwrap();
+    assert_eq!((state.queue_length, state.is_playing), (2, false), "loaded, paused");
+    h.audio.set_shuffle(true).unwrap();
+    h.audio.set_repeat_mode("one").unwrap();
+    let state: crate::PlayerState = serde_json::from_value(h.audio.state()).unwrap();
+    assert_eq!((state.shuffle, state.repeat_mode.as_str()), (true, "one"));
+}
+
+#[test]
 fn the_queue_and_settings_come_back_after_a_restart() {
     let dir;
     {

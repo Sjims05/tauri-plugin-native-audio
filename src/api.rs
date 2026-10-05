@@ -68,6 +68,26 @@ pub struct UpdateQueueOptions {
     pub order: Option<String>,
 }
 
+/// The player's state, as `getState` gives it (the parts Rust code needs).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PlayerState {
+    /// "idle", "loading", "playing", "ended" or "error".
+    pub status: String,
+    /// Seconds into the current item.
+    pub current_time: f64,
+    /// Seconds.
+    pub duration: f64,
+    pub is_playing: bool,
+    /// -1 when nothing is loaded.
+    pub queue_index: i64,
+    pub queue_length: i64,
+    pub current_id: Option<i64>,
+    pub shuffle: bool,
+    /// "off", "all" or "one".
+    pub repeat_mode: String,
+}
+
 /// What `updateQueue` changed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 pub struct UpdateQueueResult {
@@ -247,6 +267,107 @@ impl<R: Runtime> NativeAudio<R> {
         {
             let _ = library;
             Ok(())
+        }
+    }
+}
+
+impl<R: Runtime> NativeAudio<R> {
+    /// The player's state: what's playing, where, playing or not, shuffle and repeat.
+    pub fn get_state(&self) -> Result<PlayerState> {
+        #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+        {
+            let audio = self.app.state::<crate::desktop::player::DesktopAudio>();
+            serde_json::from_value(audio.state()).map_err(|e| e.to_string())
+        }
+        #[cfg(all(feature = "mobile", target_os = "android"))]
+        {
+            self.handle.run_mobile_plugin("getState", ()).map_err(|e| e.to_string())
+        }
+        #[cfg(not(any(
+            all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))),
+            all(feature = "mobile", target_os = "android")
+        )))]
+        Err("not supported on this platform".into())
+    }
+
+    /// Loads a queue, paused, at `start_index` and `start_position` seconds into it (like `setQueue`).
+    pub fn set_queue(&self, items: Vec<QueueItem>, start_index: usize, start_position: f64, source_id: Option<String>) -> Result<()> {
+        #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+        {
+            let audio = self.app.state::<crate::desktop::player::DesktopAudio>();
+            let items = serde_json::to_value(items).and_then(serde_json::from_value).map_err(|e| e.to_string())?;
+            audio.load(items, start_index, start_position, source_id).map(|_| ())
+        }
+        #[cfg(all(feature = "mobile", target_os = "android"))]
+        {
+            #[derive(Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Payload {
+                items: Vec<QueueItem>,
+                start_index: usize,
+                start_position: f64,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                source_id: Option<String>,
+            }
+            self.handle
+                .run_mobile_plugin::<serde_json::Value>("setQueue", Payload { items, start_index, start_position, source_id })
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+        #[cfg(not(any(
+            all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))),
+            all(feature = "mobile", target_os = "android")
+        )))]
+        {
+            let _ = (items, start_index, start_position, source_id);
+            Err("not supported on this platform".into())
+        }
+    }
+
+    pub fn set_shuffle(&self, enabled: bool) -> Result<()> {
+        #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+        {
+            self.app.state::<crate::desktop::player::DesktopAudio>().set_shuffle(enabled).map(|_| ())
+        }
+        #[cfg(all(feature = "mobile", target_os = "android"))]
+        {
+            #[derive(Serialize)]
+            struct Payload {
+                enabled: bool,
+            }
+            self.handle.run_mobile_plugin::<serde_json::Value>("setShuffle", Payload { enabled }).map(|_| ()).map_err(|e| e.to_string())
+        }
+        #[cfg(not(any(
+            all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))),
+            all(feature = "mobile", target_os = "android")
+        )))]
+        {
+            let _ = enabled;
+            Err("not supported on this platform".into())
+        }
+    }
+
+    /// "off", "all" or "one".
+    pub fn set_repeat_mode(&self, mode: &str) -> Result<()> {
+        #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+        {
+            self.app.state::<crate::desktop::player::DesktopAudio>().set_repeat_mode(mode).map(|_| ())
+        }
+        #[cfg(all(feature = "mobile", target_os = "android"))]
+        {
+            #[derive(Serialize)]
+            struct Payload<'a> {
+                mode: &'a str,
+            }
+            self.handle.run_mobile_plugin::<serde_json::Value>("setRepeatMode", Payload { mode }).map(|_| ()).map_err(|e| e.to_string())
+        }
+        #[cfg(not(any(
+            all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))),
+            all(feature = "mobile", target_os = "android")
+        )))]
+        {
+            let _ = mode;
+            Err("not supported on this platform".into())
         }
     }
 }
