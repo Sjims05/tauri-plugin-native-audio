@@ -55,19 +55,7 @@ impl DesktopAudio {
         let state = self.state();
         self.sync_panel(&mut l.panel, &state);
         // Sent when something changes, and every 250 ms while playing (the position).
-        let summary = format!(
-                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-                state["status"],
-                state["queueIndex"],
-                state["isPlaying"],
-                state["queueLength"],
-                state["shuffle"],
-                state["repeatMode"],
-                state["volume"],
-                state["sleepTimerEndsAtMs"],
-                state["sleepTimerEndOfTrack"],
-                state["error"]
-            );
+        let summary = state_summary(&state);
         let playing = state["isPlaying"].as_bool() == Some(true);
         if summary != l.last_state || (playing && l.last_sent.elapsed() >= Duration::from_millis(250)) {
             self.emit(STATE_EVENT, &state);
@@ -291,4 +279,27 @@ pub(super) fn count_lists(t: &mut Tracking, queue: &Queue, persist: &mut Persist
             out.push((TRACKED_LIST_EVENT, change));
         }
     }
+}
+
+/// What a state event is sent for when it changes. Paused, the position too: it only moves then by a seek or
+/// a load (from Rust, which gets no answer back on the UI side), and the UI should show it.
+pub(super) fn state_summary(state: &Value) -> String {
+    let paused_at = match state["isPlaying"].as_bool() {
+        Some(true) => String::new(),
+        _ => format!("{:.1}", state["currentTime"].as_f64().unwrap_or(0.0)),
+    };
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        state["status"],
+        state["queueIndex"],
+        state["isPlaying"],
+        state["queueLength"],
+        state["shuffle"],
+        state["repeatMode"],
+        state["volume"],
+        state["sleepTimerEndsAtMs"],
+        state["sleepTimerEndOfTrack"],
+        state["error"],
+        paused_at
+    )
 }

@@ -249,6 +249,31 @@ fn the_rust_api_reads_the_state_and_loads_a_queue_paused() {
 }
 
 #[test]
+fn loading_the_same_queue_again_moves_to_the_new_position_while_paused() {
+    let mut h = Harness::new("reload-position");
+    let items = |h: &Harness| vec![h.track("a", 100_000, 1, 1), h.track("b", 100_000, 2, 2)];
+    h.audio.load(items(&h), 1, 0.2, None).unwrap();
+    h.play_frames(64);
+    let first: crate::PlayerState = serde_json::from_value(h.audio.state()).unwrap();
+    h.audio.load(items(&h), 1, 0.5, None).unwrap();
+    h.play_frames(64);
+    let second: crate::PlayerState = serde_json::from_value(h.audio.state()).unwrap();
+    assert!((first.current_time - 0.2).abs() < 0.05 && (second.current_time - 0.5).abs() < 0.05, "{first:?} {second:?}");
+    assert!(!first.is_playing && !second.is_playing);
+}
+
+#[test]
+fn a_paused_position_change_sends_a_state_event() {
+    use super::background::state_summary;
+    let state = |playing: bool, time: f64| serde_json::json!({ "isPlaying": playing, "currentTime": time, "queueIndex": 1 });
+    // Paused: a new place is a change (a seek or a load from Rust); the same place isn't.
+    assert_ne!(state_summary(&state(false, 18.0)), state_summary(&state(false, 39.0)));
+    assert_eq!(state_summary(&state(false, 18.0)), state_summary(&state(false, 18.02)));
+    // Playing: the position moves all the time (sent every 250 ms instead).
+    assert_eq!(state_summary(&state(true, 18.0)), state_summary(&state(true, 39.0)));
+}
+
+#[test]
 fn the_queue_and_settings_come_back_after_a_restart() {
     let dir;
     {
