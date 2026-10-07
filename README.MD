@@ -53,14 +53,14 @@ plugin, remove it first; your imports and permission identifiers keep working.
 
 ```toml
 [dependencies]
-tauri-plugin-native-audio = { git = "https://github.com/Sjims05/tauri-plugin-native-audio", tag = "v1.7.0" }
+tauri-plugin-native-audio = { git = "https://github.com/Sjims05/tauri-plugin-native-audio", tag = "v1.8.0" }
 ```
 
 The JavaScript bindings:
 
 ```sh
-npm install github:Sjims05/tauri-plugin-native-audio#v1.7.0
-# or: pnpm add / yarn add github:Sjims05/tauri-plugin-native-audio#v1.7.0
+npm install github:Sjims05/tauri-plugin-native-audio#v1.8.0
+# or: pnpm add / yarn add github:Sjims05/tauri-plugin-native-audio#v1.8.0
 ```
 
 Use the same tag for both, so the Rust and JavaScript sides match.
@@ -71,7 +71,7 @@ Two Cargo features choose what's built, both on by default: `mobile` (Android an
 player). An app for one side only can leave the other out, for example desktop only:
 
 ```toml
-tauri-plugin-native-audio = { git = "…", tag = "v1.7.0", default-features = false, features = ["desktop"] }
+tauri-plugin-native-audio = { git = "…", tag = "v1.8.0", default-features = false, features = ["desktop"] }
 ```
 
 `carSupport` (Android Auto) needs `mobile`. Linux builds need the ALSA development package (`libasound2-dev` on

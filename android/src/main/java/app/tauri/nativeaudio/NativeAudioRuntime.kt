@@ -1012,6 +1012,7 @@ object NativeAudioRuntime {
                 val itemId = synchronized(lock) { player?.currentMediaItem?.mediaId?.toLongOrNull() }
                 val press = PlaybackControls.recordPress(context, button, itemId) ?: return true
                 NativeAudioPlugin.emitControlPressToActive(press)
+                QueueProviders.controlPressed(context, press)
                 refreshControls()
             }
         }
@@ -1411,6 +1412,7 @@ object NativeAudioRuntime {
         val itemId = item?.mediaId?.toLongOrNull() ?: return
         val event = PlaybackEvents.record(context, type, itemId, positionMs.coerceAtLeast(0L))
         NativeAudioPlugin.emitPlaybackEventToActive(event)
+        QueueProviders.playbackEvent(context, event)
     }
 
     /** The artwork URL the app gave for [item] (not the provider URI it may have been swapped for). */

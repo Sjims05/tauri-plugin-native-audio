@@ -10,6 +10,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import org.json.JSONObject
 
 /**
  * An app's helper for when the player runs without the app's own screen (Android Auto with the app closed):
@@ -35,6 +36,18 @@ interface QueueProvider {
 
     /** What plays changed (the song, play or pause, shuffle or repeat; while playing, now and then). */
     fun onPlayback(context: Context, playback: ProvidedPlayback) {}
+
+    /**
+     * A setControls custom button was pressed (`active`: a toggle's new state). Return true when it's handled:
+     * then it isn't handed to the app later (its press log entry is acknowledged).
+     */
+    fun onControlPress(context: Context, buttonId: String, itemId: Long?, active: Boolean?): Boolean = false
+
+    /**
+     * A playback event as logged for the app (`id`, `type` start / complete / skip, `itemId`, `positionMs`,
+     * `atMs`). The app still gets it later: the ids let it count each one once.
+     */
+    fun onPlaybackEvent(context: Context, event: JSONObject) {}
 }
 
 /** A queue from the provider: items as setQueue takes them. */
@@ -72,6 +85,8 @@ internal object QueueProviders {
     @Volatile private var provider: QueueProvider? = null
     private val askers: ExecutorService = Executors.newCachedThreadPool { Thread(it, "native-audio-provider") }
     private val playbackThread: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "native-audio-provider-playback") }
+    // Presses and playback events: each one, in order.
+    private val eventThread: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "native-audio-provider-events") }
     // The latest playback not yet handed over (older ones are dropped: only the latest matters).
     private val pendingPlayback = AtomicReference<ProvidedPlayback?>(null)
     private val main = Handler(Looper.getMainLooper())
@@ -105,6 +120,25 @@ internal object QueueProviders {
         askers.execute {
             val answer = ask(context, timeoutMs, question)
             main.post { then(answer) }
+        }
+    }
+
+    /** Hands a button press to the provider (in the background, in order); a handled one is acknowledged. */
+    fun controlPressed(context: Context, press: PlaybackControls.Press) {
+        val p = get(context) ?: return
+        eventThread.execute {
+            val handled = runCatching { p.onControlPress(context, press.buttonId, press.itemId, press.active) }
+                .onFailure { Log.w(TAG, "the queue provider failed: $it") }
+                .getOrDefault(false)
+            if (handled) PlaybackControls.acknowledge(context, setOf(press.id))
+        }
+    }
+
+    /** Hands a playback event to the provider (in the background, in order). */
+    fun playbackEvent(context: Context, event: JSONObject) {
+        val p = get(context) ?: return
+        eventThread.execute {
+            runCatching { p.onPlaybackEvent(context, event) }.onFailure { Log.w(TAG, "the queue provider failed: $it") }
         }
     }
 

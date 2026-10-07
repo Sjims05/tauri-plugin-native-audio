@@ -275,6 +275,10 @@ class CarQueue : app.tauri.nativeaudio.QueueProvider {
     override fun queueForEntry(context: Context, entryId: String): ProvidedQueue? = null
     // What plays changed (the song, play or pause, shuffle or repeat; while playing, now and then).
     override fun onPlayback(context: Context, playback: ProvidedPlayback) {}
+    // A custom button (setControls) was pressed; true: handled (the app doesn't get it later).
+    override fun onControlPress(context: Context, buttonId: String, itemId: Long?, active: Boolean?): Boolean = false
+    // A playback event as the app gets it (the app still gets it later; its id lets it count each once).
+    override fun onPlaybackEvent(context: Context, event: JSONObject) {}
 }
 ```
 
