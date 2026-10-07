@@ -35,6 +35,8 @@ import kotlin.math.max
 import kotlin.random.Random
 
 private const val TAG = "plugin/native-audio"
+/** How long the app's queue provider may take to hand a queue when the player starts with nothing loaded. */
+private const val PROVIDER_START_TIMEOUT_MS = 8_000L
 
 // The player itself (ExoPlayer, the media session, the queue, sleep timer, saved state), shared by the
 // plugin's commands, the audio service and Android Auto. One per process.
@@ -762,6 +764,31 @@ object NativeAudioRuntime {
             player?.mediaItemCount == 0
         }
         if (idle && restoreLastQueue(context) && mode == "play") play(context)
+        if (idle) askProviderForQueue(context)
+    }
+
+    /**
+     * Started with nothing loaded: the app's queue provider (see QueueProvider.kt) may have a newer queue (another
+     * device's, for example). Loaded paused, as long as nothing has changed meanwhile (nobody pressed play or
+     * picked something).
+     */
+    private fun askProviderForQueue(context: Context) {
+        val before = synchronized(lock) { player?.let { listOf(it.mediaItemCount, it.currentMediaItemIndex, it.currentMediaItem?.mediaId) } }
+        QueueProviders.askLater(context, PROVIDER_START_TIMEOUT_MS, { it.queueAtStart(context) }) { queue ->
+            if (queue == null || queue.items.isEmpty()) return@askLater
+            val unchanged = synchronized(lock) {
+                val p = player
+                p != null && !p.isPlaying && listOf(p.mediaItemCount, p.currentMediaItemIndex, p.currentMediaItem?.mediaId) == before
+            }
+            if (unchanged) applyProvidedQueue(context, queue)
+        }
+    }
+
+    /** Loads a queue from the app's provider, paused, with its shuffle and repeat. */
+    internal fun applyProvidedQueue(context: Context, queue: ProvidedQueue) {
+        setQueue(context, queue.items, queue.index, queue.positionMs / 1000.0)
+        setShuffle(context, queue.shuffle)
+        setRepeatMode(context, repeatModeOf(queue.repeatMode))
     }
 
     /** For onPlaybackResumption: the saved queue, whose modes are applied once the session sets it. */
@@ -1128,6 +1155,29 @@ object NativeAudioRuntime {
     private fun emitState() {
         val snapshot = synchronized(lock) { snapshotLocked() }
         NativeAudioPlugin.emitToActive(snapshot)
+        tellProvider()
+    }
+
+    /** Hands what plays to the app's queue provider, if it has one (it decides what to do with it). */
+    private fun tellProvider() {
+        val context = appContext ?: return
+        if (QueueProviders.get(context) == null) return
+        val playback = synchronized(lock) {
+            val p = player ?: return
+            if (p.mediaItemCount == 0) return
+            val current = p.currentMediaItem
+            ProvidedPlayback(
+                itemIds = (0 until p.mediaItemCount).map { p.getMediaItemAt(it).mediaId.toLongOrNull() },
+                index = p.currentMediaItemIndex,
+                positionMs = max(0L, p.currentPosition),
+                playing = p.isPlaying,
+                shuffle = p.shuffleModeEnabled,
+                repeatMode = repeatModeName(p.repeatMode),
+                title = current?.mediaMetadata?.title?.toString(),
+                artist = current?.mediaMetadata?.artist?.toString(),
+            )
+        }
+        QueueProviders.playbackChanged(context, playback)
     }
 
     private fun progressPrefs(context: Context): SharedPreferences =
@@ -1411,6 +1461,12 @@ object NativeAudioRuntime {
             if (duration != C.TIME_UNSET) target = kotlin.math.min(target, duration)
             exoPlayer.seekTo(target)
         }
+    }
+
+    internal fun repeatModeOf(name: String): Int = when (name) {
+        "one" -> Player.REPEAT_MODE_ONE
+        "all" -> Player.REPEAT_MODE_ALL
+        else -> Player.REPEAT_MODE_OFF
     }
 
     private fun repeatModeName(mode: Int): String = when (mode) {

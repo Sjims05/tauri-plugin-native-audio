@@ -255,6 +255,38 @@ await setControlActive("like", likedSongIds, true);
 - `getControlPresses()` / `acknowledgeControlPresses(ids)` are the lower-level versions of `onControlPressed`.
 - The buttons are saved on the device, so they're there when Android Auto starts the app in the background.
 
+## With the app closed: a queue provider
+
+When Android Auto starts the player by itself, only the player runs (not your app's page or Rust code). An app
+can still take part through a queue provider: a Kotlin class named in the app's manifest.
+
+```xml
+<application>
+    <meta-data android:name="app.tauri.nativeaudio.QUEUE_PROVIDER" android:value="com.example.CarQueue" />
+</application>
+```
+
+```kotlin
+class CarQueue : app.tauri.nativeaudio.QueueProvider {
+    // The player started with nothing loaded: a queue to load (paused) instead of the last one, or null.
+    override fun queueAtStart(context: Context): ProvidedQueue? = null
+    // Entries at the top of a library folder (its id from setLibrary); picking one plays queueForEntry.
+    override fun entries(context: Context, folderId: String): List<ProvidedEntry> = emptyList()
+    override fun queueForEntry(context: Context, entryId: String): ProvidedQueue? = null
+    // What plays changed (the song, play or pause, shuffle or repeat; while playing, now and then).
+    override fun onPlayback(context: Context, playback: ProvidedPlayback) {}
+}
+```
+
+Every method has a default, so implement only what you need. The class needs a constructor without arguments.
+Calls run on a background thread, and the player doesn't wait long:
+- 8 s for `queueAtStart`. The player restores its last queue first, and replaces it only if nothing has
+  changed meanwhile: nobody pressed play or picked something.
+- 3 s for `entries` and `queueForEntry`.
+
+`onPlayback` gets only the latest state when several changes come quickly. The provider's module needs the
+plugin's Android project as a dependency: `implementation(project(":tauri-plugin-native-audio"))`.
+
 ## Good to know
 
 - **Colors on the small player card:** Android Auto picks its colors from the cover by itself, and its small player

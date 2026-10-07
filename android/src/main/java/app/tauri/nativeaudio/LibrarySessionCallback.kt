@@ -15,12 +15,17 @@ import androidx.media3.session.SessionResult
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.SettableFuture
 import kotlin.math.min
 
 private const val ROOT_ID = "root"
 private const val FOLDER_PREFIX = "folder:"
 private const val ITEM_PREFIX = "item:"
 private const val EMPTY_ID = "empty"
+/** Entries from the app's queue provider (see QueueProvider.kt). */
+private const val PROVIDED_PREFIX = "provided:"
+/** How long the queue provider may take for a folder's entries, or a picked entry's queue. */
+private const val PROVIDER_TIMEOUT_MS = 3_000L
 private const val MAX_SEARCH_RESULTS = 50
 
 /**
@@ -98,10 +103,38 @@ internal class LibrarySessionCallback(private val context: Context) : MediaLibra
             else -> return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE))
         }
 
-        val from = page.coerceAtLeast(0) * pageSize.coerceAtLeast(1)
-        val pageItems = if (from >= children.size) emptyList() else children.subList(from, min(children.size, from + pageSize))
-        return Futures.immediateFuture(LibraryResult.ofItemList(pageItems, params))
+        val pageOf = { all: List<MediaItem> ->
+            val from = page.coerceAtLeast(0) * pageSize.coerceAtLeast(1)
+            val pageItems = if (from >= all.size) emptyList() else all.subList(from, min(all.size, from + pageSize))
+            LibraryResult.ofItemList(pageItems, params)
+        }
+        // A folder's first page: the app's queue provider can put entries at the top ("Continue from ...").
+        if (parentId.startsWith(FOLDER_PREFIX) && page == 0 && QueueProviders.get(context) != null) {
+            val result = SettableFuture.create<LibraryResult<ImmutableList<MediaItem>>>()
+            val folderId = parentId.removePrefix(FOLDER_PREFIX)
+            QueueProviders.askLater(context, PROVIDER_TIMEOUT_MS, { it.entries(context, folderId) }) { entries ->
+                result.set(pageOf(entries.orEmpty().map(::providedItem) + children))
+            }
+            return result
+        }
+        return Futures.immediateFuture(pageOf(children))
     }
+
+    /** An entry from the app's queue provider: playing it plays its queue. */
+    private fun providedItem(entry: ProvidedEntry): MediaItem =
+        MediaItem.Builder()
+            .setMediaId(PROVIDED_PREFIX + entry.id)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(entry.title)
+                    .setSubtitle(entry.subtitle)
+                    .setArtist(entry.subtitle)
+                    .setIsBrowsable(false)
+                    .setIsPlayable(true)
+                    .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
+                    .build(),
+            )
+            .build()
 
     override fun onSearch(
         session: MediaLibrarySession,
@@ -164,6 +197,24 @@ internal class LibrarySessionCallback(private val context: Context) : MediaLibra
             ?.takeIf { it.mediaId.isEmpty() && it.localConfiguration == null }
             ?.requestMetadata?.searchQuery
         if (voiceQuery != null && library.search) return playFromSearch(library, voiceQuery, startPositionMs)
+
+        // An entry from the app's queue provider: its queue.
+        val provided = mediaItems.singleOrNull()?.mediaId?.takeIf { it.startsWith(PROVIDED_PREFIX) }
+        if (provided != null) {
+            val result = SettableFuture.create<MediaSession.MediaItemsWithStartPosition>()
+            val entryId = provided.removePrefix(PROVIDED_PREFIX)
+            QueueProviders.askLater(context, PROVIDER_TIMEOUT_MS, { it.queueForEntry(context, entryId) }) { queue ->
+                if (queue == null || queue.items.isEmpty()) {
+                    result.setException(UnsupportedOperationException("nothing to continue"))
+                    return@askLater
+                }
+                NativeAudioRuntime.setShuffle(context, queue.shuffle)
+                NativeAudioRuntime.setRepeatMode(context, NativeAudioRuntime.repeatModeOf(queue.repeatMode))
+                val items = queue.items.map { NativeAudioRuntime.buildMediaItem(it.src!!.trim(), it.id, it.title, it.artist, it.artworkUrl) }
+                result.set(MediaSession.MediaItemsWithStartPosition(items, queue.index.coerceIn(0, items.size - 1), queue.positionMs))
+            }
+            return result
+        }
 
         // One pick from a browse list: play its whole folder when that folder is playable.
         val single = mediaItems.singleOrNull()?.mediaId
