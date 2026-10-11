@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Build
@@ -14,11 +15,14 @@ import android.os.Looper
 import android.util.Log
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
+import androidx.core.app.NotificationCompat
 import androidx.media3.ui.PlayerNotificationManager
 
 private const val NOTIFICATION_ID = 9501
 private const val CHANNEL_ID_SUFFIX = ".native_audio"
 private const val NOTIFICATION_ICON_NAME = "ic_notification"
+/** How long the placeholder notification waits for something to play before going (nothing loaded). */
+private const val EMPTY_PLACEHOLDER_MS = 10_000L
 
 /**
  * Keeps playback alive in the background and shows the media notification. It's a library service
@@ -55,6 +59,45 @@ class NativeAudioService : MediaLibraryService() {
         // Started with nothing loaded (e.g. Android Auto connecting while the app was closed):
         // load the last queue, paused, so it's ready to continue where it stopped.
         NativeAudioRuntime.restoreLastQueueIfIdle(applicationContext)
+    }
+
+    /**
+     * Started with startForegroundService (Android Auto, a media button, the app): Android ends the app unless
+     * the service calls startForeground within a few seconds, even when nothing plays yet (a queue restored
+     * paused, or one the app's queue provider is still fetching). So a plain notification right away; the
+     * player's own notification replaces it (the same id) as soon as there's something to show, and the paused
+     * rules decide when to leave the foreground.
+     */
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!isForeground) startForegroundNow()
+        return super.onStartCommand(intent, flags, startId)
+    }
+
+    private fun startForegroundNow() {
+        ensureNotificationChannel()
+        val notification = NotificationCompat.Builder(this, channelId())
+            .setSmallIcon(resolveNotificationSmallIconResId())
+            .setContentTitle(appDisplayName())
+            .setContentIntent(NativeAudioRuntime.mediaSession()?.sessionActivity)
+            .setSilent(true)
+            .build()
+        try {
+            startForeground(NOTIFICATION_ID, notification)
+            isForeground = true
+            isPaused = true
+            applyPausedRules()
+        } catch (e: Exception) {
+            // Android 12+ can refuse it when the start wasn't a foreground start; nothing to keep up then.
+            Log.w("plugin/native-audio", "startForeground not allowed", e)
+            return
+        }
+        // Nothing loaded after a while (no last queue, nothing from the app): the placeholder goes.
+        handler.postDelayed({
+            if (NativeAudioRuntime.notificationPlayer()?.mediaItemCount == 0 && isForeground && isPaused) {
+                isForeground = false
+                stopForegroundCompat(remove = true)
+            }
+        }, EMPTY_PLACEHOLDER_MS)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
