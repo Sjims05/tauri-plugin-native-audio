@@ -349,6 +349,29 @@ class NativeAudioPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     @Command
+    fun moveInPlayOrder(invoke: Invoke) {
+        val args = invoke.parseArgs(MoveInQueueArgs::class.java)
+        val from = args.from
+        val to = args.to
+        if (from == null || to == null) {
+            invoke.reject("from and to are required")
+            return
+        }
+
+        runCatching {
+            NativeAudioRuntime.moveInPlayOrder(activity.applicationContext, from, to)
+        }.onSuccess { inRange ->
+            if (inRange) {
+                invoke.resolve(toJsObject(NativeAudioRuntime.getState(activity.applicationContext)))
+            } else {
+                invoke.reject("index out of range")
+            }
+        }.onFailure {
+            invoke.reject(it.message ?: "moveInPlayOrder failed")
+        }
+    }
+
+    @Command
     fun getQueue(invoke: Invoke) {
         runCatching {
             NativeAudioRuntime.getQueue(activity.applicationContext)
@@ -361,6 +384,7 @@ class NativeAudioPlugin(private val activity: Activity) : Plugin(activity) {
             payload.put("items", items)
             payload.put("currentIndex", queue.currentIndex)
             payload.put("playOrder", playOrder)
+            payload.put("nextPassOrder", queue.nextPassOrder?.let { order -> JSArray().also { a -> order.forEach { a.put(it) } } })
             payload.put("sourceId", queue.sourceId)
             invoke.resolve(payload)
         }.onFailure {

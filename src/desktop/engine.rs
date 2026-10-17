@@ -120,42 +120,29 @@ impl Engine {
     pub fn new(next_track: NextTrack, device: Option<&str>) -> Result<Self, String> {
         let shared = new_shared();
 
-        // The device's own rate and channels; tracks are converted to it.
-        let host = cpal::default_host();
-        let chosen = device.and_then(|id| find_device(&host, id).map(|d| (id.to_string(), d)));
-        let (device_id, device) = match chosen {
-            Some((id, device)) => (Some(id), device),
-            // The system default itself (on Windows its virtual endpoint), not the device that's
-            // the default right now: so per-app routing (Windows settings, SteelSeries Sonar, ...)
-            // applies, and a change of default is reported (device_lost) to reopen on the new one.
-            None => (None, host.default_output_device().ok_or("no audio output device")?),
-        };
-        let supported = device.default_output_config().map_err(|e| e.to_string())?;
-        let sample_rate = supported.sample_rate();
-        let channels = supported.channels() as usize;
-        let capacity = (sample_rate as f32 * BUFFER_SECONDS) as usize * channels;
-        let (producer, consumer) = RingBuffer::<f32>::new(capacity);
-
-        // cpal streams can't move between threads on every platform, so one thread owns it.
+        // One thread owns the output: it finds the device, opens the stream and keeps it (cpal streams can't move
+        // between threads on every platform). The device is found there too, not here: on Windows it's a COM object,
+        // and one made on the caller's thread (the app's main thread, for a command) may have to be called back on
+        // that thread, which is waiting here for the output to be ready: the app would hang.
+        let wanted = device.map(str::to_string);
         let (stop_output, stop_rx) = mpsc::channel::<()>();
-        let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
+        let (ready_tx, ready_rx) = mpsc::channel::<Result<Opened, String>>();
         let output_shared = shared.clone();
         let output_thread = thread::Builder::new()
             .name("native-audio-output".into())
-            .spawn(move || {
-                let stream = match build_stream(&device, supported, consumer, output_shared) {
-                    Ok(stream) => stream,
-                    Err(e) => {
-                        let _ = ready_tx.send(Err(e));
-                        return;
-                    }
-                };
-                let _ = ready_tx.send(stream.play().map_err(|e| e.to_string()));
-                let _ = stop_rx.recv();
-                drop(stream);
+            .spawn(move || match open_output(wanted.as_deref(), output_shared) {
+                Ok((stream, opened)) => {
+                    let _ = ready_tx.send(Ok(opened));
+                    let _ = stop_rx.recv();
+                    drop(stream);
+                }
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e));
+                }
             })
             .map_err(|e| e.to_string())?;
-        ready_rx.recv().map_err(|_| "audio output thread stopped".to_string())??;
+        let Opened { device_id, sample_rate, channels, producer } =
+            ready_rx.recv().map_err(|_| "audio output thread stopped".to_string())??;
 
         let (commands, feeder_thread) = start_feeder(producer, shared.clone(), sample_rate, channels, next_track)?;
 
@@ -369,6 +356,36 @@ pub fn output_devices() -> (Vec<OutputDevice>, Option<String>) {
 pub fn default_output_device() -> Option<OutputDevice> {
     let device = cpal::default_host().default_output_device()?;
     Some(OutputDevice { id: device.id().ok()?.to_string(), name: device.to_string() })
+}
+
+/// What the output thread opened: the device (its id, or None for the system default), its own rate and channels
+/// (tracks are converted to them), and the buffer's end that the feeder fills.
+struct Opened {
+    device_id: Option<String>,
+    sample_rate: u32,
+    channels: usize,
+    producer: Producer<f32>,
+}
+
+/// On the output thread: finds the device (`wanted`, else the system default) and starts playing its stream.
+fn open_output(wanted: Option<&str>, shared: Arc<Shared>) -> Result<(cpal::Stream, Opened), String> {
+    let host = cpal::default_host();
+    let chosen = wanted.and_then(|id| find_device(&host, id).map(|d| (id.to_string(), d)));
+    let (device_id, device) = match chosen {
+        Some((id, device)) => (Some(id), device),
+        // The system default itself (on Windows its virtual endpoint), not the device that's
+        // the default right now: so per-app routing (Windows settings, SteelSeries Sonar, ...)
+        // applies, and a change of default is reported (device_lost) to reopen on the new one.
+        None => (None, host.default_output_device().ok_or("no audio output device")?),
+    };
+    let supported = device.default_output_config().map_err(|e| e.to_string())?;
+    let sample_rate = supported.sample_rate();
+    let channels = supported.channels() as usize;
+    let capacity = (sample_rate as f32 * BUFFER_SECONDS) as usize * channels;
+    let (producer, consumer) = RingBuffer::<f32>::new(capacity);
+    let stream = build_stream(&device, supported, consumer, shared)?;
+    stream.play().map_err(|e| e.to_string())?;
+    Ok((stream, Opened { device_id, sample_rate, channels, producer }))
 }
 
 fn find_device(host: &cpal::Host, id: &str) -> Option<cpal::Device> {

@@ -156,6 +156,11 @@ pub fn move_in_queue(audio: State<'_, DesktopAudio>, from: usize, to: usize) -> 
 }
 
 #[tauri::command]
+pub fn move_in_play_order(audio: State<'_, DesktopAudio>, from: usize, to: usize) -> Result<Value> {
+    audio.move_in_play_order(from, to)
+}
+
+#[tauri::command]
 pub fn get_state(audio: State<'_, DesktopAudio>) -> Value {
     audio.state()
 }
@@ -353,6 +358,7 @@ pub fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + 
         update_queue,
         remove_from_queue,
         move_in_queue,
+        move_in_play_order,
         set_volume,
         get_output_devices,
         set_output_device,

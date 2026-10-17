@@ -24,6 +24,13 @@ class QueueOrderTest {
     }
 
     @Test
+    fun afterRemovalsMapsWhatsLeftAndRefusesOtherChanges() {
+        assertEquals(mapOf(0 to 0, 2 to 1, 3 to 2), QueueOrder.afterRemovals(listOf("a", "b", "c", "d"), listOf("a", "c", "d")))
+        assertEquals(null, QueueOrder.afterRemovals(listOf("a", "b"), listOf("b", "a")))
+        assertEquals(null, QueueOrder.afterRemovals(listOf("a", "b"), listOf("a", "b", "x")))
+    }
+
+    @Test
     fun removeKeepsTheRestOfTheOrder() {
         // Remove B (index 1): list [A, C, D] = 0, 1, 2. Order C, A, D.
         assertArrayEquals(intArrayOf(1, 0, 2), QueueOrder.remove(order, at = 1))

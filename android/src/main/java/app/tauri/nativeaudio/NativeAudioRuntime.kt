@@ -82,6 +82,12 @@ object NativeAudioRuntime {
     @Volatile
     private var skipIntervalMs = 0L
     private var shuffleEnabled = false
+
+    /**
+     * With shuffle and repeat all: the next pass's order, worked out ahead (an "up next" list can show it), for the
+     * queue it was made for (its items' ids in list order); starting over uses it, so what was shown is what plays.
+     */
+    private var nextPass: Pair<List<String>, IntArray>? = null
     /** setVolume (a slider's position), saved in PluginSettings; loaded in ensure. */
     private var volume = 1f
     /** The volume curve (setOptions volumeCurve) as a power: what's heard is volume^volumeExponent. */
@@ -708,6 +714,30 @@ object NativeAudioRuntime {
         return true
     }
 
+    /**
+     * Moves what plays at place [from] of the play order to place [to] (what an "up next" list shows). Without
+     * shuffle the play order is the list, so the list changes; with shuffle only the play order does.
+     */
+    fun moveInPlayOrder(context: Context, from: Int, to: Int): Boolean {
+        synchronized(lock) {
+            ensure(context)
+            val exoPlayer = player ?: return false
+            val order = playOrderLocked(exoPlayer)
+            if (from !in order.indices || to !in order.indices) return false
+            if (from == to) return true
+            if (!exoPlayer.shuffleModeEnabled) {
+                exoPlayer.moveMediaItem(order[from], order[to])
+            } else {
+                val moved = order.toMutableList()
+                moved.add(to, moved.removeAt(from))
+                setShuffleIndicesLocked(exoPlayer, moved.toIntArray())
+            }
+            lastMediaItemIndex = exoPlayer.currentMediaItemIndex
+        }
+        emitState()
+        return true
+    }
+
     fun getQueue(context: Context): NativeAudioQueue {
         synchronized(lock) {
             ensure(context)
@@ -718,6 +748,7 @@ object NativeAudioRuntime {
                 currentIndex = if (count > 0) exoPlayer.currentMediaItemIndex else -1,
                 playOrder = playOrderLocked(exoPlayer),
                 sourceId = queueSourceId,
+                nextPassOrder = nextPassOrderLocked(exoPlayer),
             )
         }
     }
@@ -1184,6 +1215,42 @@ object NativeAudioRuntime {
     private fun progressPrefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PROGRESS_PREFS_NAME, Context.MODE_PRIVATE)
 
+    /**
+     * With shuffle and repeat all: the order the next pass will play in (queue indices; tracks added with addToQueue
+     * that won't stay left out), worked out now the way starting over would (it opens with the track this pass opened
+     * with, keeps this pass's last ones out of its start), and kept until the queue changes. Null otherwise.
+     */
+    private fun nextPassOrderLocked(exoPlayer: ExoPlayer): IntArray? {
+        val count = exoPlayer.mediaItemCount
+        if (!exoPlayer.shuffleModeEnabled || exoPlayer.repeatMode != Player.REPEAT_MODE_ALL || count < 2) return null
+        val signature = (0 until count).map { exoPlayer.getMediaItemAt(it).mediaId }
+        nextPass?.let { (madeFor, order) -> if (madeFor == signature) return order.copyOf() }
+        val order = playOrderLocked(exoPlayer)
+        val first = order.first()
+        val repeatAdded = appContext?.let { PluginSettings.repeatAddedTracks(it) } ?: false
+        // What the next pass keeps: added tracks go when it starts over (unless repeatAddedTracks); the first stays.
+        val kept = (0 until count).filter { repeatAdded || it == first || !isAddedToQueue(exoPlayer.getMediaItemAt(it)) }
+        // Tracks only taken out: the order worked out stays, without them, so what was shown stays.
+        nextPass?.let { (madeFor, planned) ->
+            val now = QueueOrder.afterRemovals(madeFor, signature) ?: return@let
+            val left = planned.toList().mapNotNull { now[it] }
+            if (left.sorted() == kept && left.firstOrNull() == first) {
+                nextPass = signature to left.toIntArray()
+                return left.toIntArray()
+            }
+        }
+        val recent = ShuffleOrderBuilder.recentTail(order).mapNotNull { i -> kept.indexOf(i).takeIf { it >= 0 } }.toSet()
+        val built = ShuffleOrderBuilder.build(
+            count = kept.size,
+            first = kept.indexOf(first).takeIf { it >= 0 },
+            recent = recent,
+            artistOf = { exoPlayer.getMediaItemAt(kept[it]).mediaMetadata.artist?.toString() },
+        )
+        val planned = built.map { kept[it] }.toIntArray()
+        nextPass = signature to planned
+        return planned.copyOf()
+    }
+
     private fun applyShuffleOrderLocked(exoPlayer: ExoPlayer, first: Int?, recent: Set<Int> = emptySet()) {
         val count = exoPlayer.mediaItemCount
         val order = ShuffleOrderBuilder.build(
@@ -1268,6 +1335,10 @@ object NativeAudioRuntime {
         if (exoPlayer.repeatMode != Player.REPEAT_MODE_ALL) return
         var order = playOrderLocked(exoPlayer)
         if (order.size < 2 || previousIndex != order.last() || currentIndex != order.first()) return
+        // The next pass as worked out ahead (and maybe shown), before the added tracks go.
+        val planned = nextPassOrderLocked(exoPlayer)
+        val removed = mutableListOf<Int>()
+        nextPass = null
 
         val context = appContext
         if (context != null && !PluginSettings.repeatAddedTracks(context)) {
@@ -1277,6 +1348,7 @@ object NativeAudioRuntime {
             for (index in added.sortedDescending()) {
                 exoPlayer.removeMediaItem(index)
                 order = QueueOrder.remove(order, index)
+                removed.add(index)
             }
             currentIndex = exoPlayer.currentMediaItemIndex
             lastMediaItemIndex = currentIndex
@@ -1284,8 +1356,14 @@ object NativeAudioRuntime {
         }
 
         if (exoPlayer.shuffleModeEnabled && order.size >= 2) {
-            // The current track opened the old pass, so it's the least recently played one.
-            applyShuffleOrderLocked(exoPlayer, currentIndex, ShuffleOrderBuilder.recentTail(order))
+            // The planned order, its indices moved past the tracks that went.
+            val mapped = planned?.map { index -> index - removed.count { it < index } }?.toIntArray()
+            if (mapped != null && mapped.size == exoPlayer.mediaItemCount) {
+                setShuffleIndicesLocked(exoPlayer, mapped)
+            } else {
+                // The current track opened the old pass, so it's the least recently played one.
+                applyShuffleOrderLocked(exoPlayer, currentIndex, ShuffleOrderBuilder.recentTail(order))
+            }
         }
     }
 

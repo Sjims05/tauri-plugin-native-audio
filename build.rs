@@ -11,6 +11,7 @@ const COMMANDS: &[&str] = &[
     "update_queue",
     "remove_from_queue",
     "move_in_queue",
+    "move_in_play_order",
     "set_volume",
     "get_output_devices",
     "set_output_device",

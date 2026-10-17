@@ -93,6 +93,9 @@ pub struct Queue {
     pending_removal: HashSet<u64>,
     /// What the engine was told follows each entry (`next_for_engine`), newest last.
     told_engine: Vec<(u64, Option<u64>)>,
+    /// With shuffle and repeat all: the next pass's order, worked out ahead (an "up next" list can show it), for the
+    /// entries it was made for (their keys in list order); starting over uses it, so what was shown is what plays.
+    next_pass: Option<(Vec<u64>, Vec<u64>)>,
 }
 
 impl Default for Queue {
@@ -115,6 +118,7 @@ impl Queue {
             revision: 0,
             pending_removal: HashSet::new(),
             told_engine: Vec::new(),
+            next_pass: None,
         }
     }
 
@@ -234,6 +238,50 @@ impl Queue {
         self.set_order(order);
     }
 
+    /// With shuffle and repeat all: the order the next pass will play in (list indices; entries added with addToQueue
+    /// that won't stay left out), worked out now the way starting over would (it opens with the entry this pass opened
+    /// with, keeps this pass's last ones out of its start), and kept until the entries change. None otherwise.
+    pub fn next_pass_order(&mut self) -> Option<Vec<usize>> {
+        let keys = self.next_pass_keys()?;
+        keys.iter().map(|&k| self.index_of(k)).collect()
+    }
+
+    fn next_pass_keys(&mut self) -> Option<Vec<u64>> {
+        if !self.shuffle || self.repeat != Repeat::All || self.order.len() < 2 {
+            return None;
+        }
+        let signature: Vec<u64> = self.entries.iter().map(|e| e.key).collect();
+        if let Some((made_for, keys)) = &self.next_pass {
+            if *made_for == signature {
+                return Some(keys.clone());
+            }
+        }
+        let first_key = self.entries[self.order[0]].key;
+        // What the next pass keeps: added entries go when it starts over (unless repeat_added); the first stays.
+        let kept: Vec<usize> = (0..self.entries.len())
+            .filter(|&i| self.repeat_added || !self.entries[i].added || self.entries[i].key == first_key)
+            .collect();
+        // Entries only taken out (or moved): the order worked out stays, without them, so what was shown stays.
+        if let Some((_, keys)) = &self.next_pass {
+            let left: Vec<u64> = keys.iter().copied().filter(|&k| self.index_of(k).is_some()).collect();
+            let mut wanted: Vec<u64> = kept.iter().map(|&i| self.entries[i].key).collect();
+            let mut have = left.clone();
+            wanted.sort_unstable();
+            have.sort_unstable();
+            if have == wanted && left.first() == Some(&first_key) {
+                self.next_pass = Some((signature, left.clone()));
+                return Some(left);
+            }
+        }
+        let first = kept.iter().position(|&i| self.entries[i].key == first_key);
+        let recent: HashSet<usize> = recent_tail(&self.order).into_iter().filter_map(|i| kept.iter().position(|&k| k == i)).collect();
+        let artists: Vec<Option<String>> = kept.iter().map(|&i| self.entries[i].item.artist.clone()).collect();
+        let order = build_shuffle(kept.len(), first, &recent, |i| artists[i].clone(), &mut self.rng);
+        let keys: Vec<u64> = order.iter().map(|&p| self.entries[kept[p]].key).collect();
+        self.next_pass = Some((signature, keys.clone()));
+        Some(keys)
+    }
+
     fn shuffled(&mut self, first: Option<usize>, recent: &HashSet<usize>) -> Vec<usize> {
         let artists: Vec<Option<String>> = self.entries.iter().map(|e| e.item.artist.clone()).collect();
         build_shuffle(self.entries.len(), first, recent, |i| artists[i].clone(), &mut self.rng)
@@ -294,6 +342,9 @@ impl Queue {
         if self.order.last() != Some(&from_index) || self.order.first() != Some(&to_index) {
             return;
         }
+        // The next pass as worked out ahead (and maybe shown), before the added entries go.
+        let planned = self.next_pass_keys();
+        self.next_pass = None;
         if !self.repeat_added {
             let added: Vec<u64> = self.entries.iter().filter(|e| e.added && e.key != to).map(|e| e.key).collect();
             for key in added {
@@ -303,10 +354,16 @@ impl Queue {
             }
         }
         if self.shuffle && self.order.len() >= 2 {
-            // `to` opened the old pass, so it's the least recently played one.
-            let recent: HashSet<usize> = recent_tail(&self.order).into_iter().collect();
-            let first = self.index_of(to);
-            let order = self.shuffled(first, &recent);
+            let planned: Option<Vec<usize>> = planned.and_then(|keys| keys.iter().map(|&k| self.index_of(k)).collect());
+            let order = match planned {
+                Some(order) if order.len() == self.entries.len() => order,
+                // `to` opened the old pass, so it's the least recently played one.
+                _ => {
+                    let recent: HashSet<usize> = recent_tail(&self.order).into_iter().collect();
+                    let first = self.index_of(to);
+                    self.shuffled(first, &recent)
+                }
+            };
             self.set_order(order);
         }
     }
@@ -499,6 +556,22 @@ impl Queue {
         self.set_order(order);
         true
     }
+
+    /// Moves what plays at place `from` of the play order to place `to` (an "up next" list follows the play order).
+    /// Without shuffle the play order is the list, so the list changes; with shuffle only the play order does.
+    pub fn move_in_play_order(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.order.len() || to >= self.order.len() {
+            return false;
+        }
+        if !self.shuffle {
+            return self.move_entry(self.order[from], self.order[to]);
+        }
+        let mut order = self.order.clone();
+        let index = order.remove(from);
+        order.insert(to, index);
+        self.set_order(order);
+        true
+    }
 }
 
 // ---- QueueOrder.kt: keeping a play order in step with edits to the list.
@@ -682,6 +755,26 @@ mod tests {
         v
     }
 
+    #[test]
+    fn moving_in_the_play_order_with_and_without_shuffle() {
+        // Without shuffle the play order is the list: moving changes the list.
+        let mut q = queue(&["a", "b", "c", "d"]);
+        assert!(q.move_in_play_order(3, 1));
+        assert_eq!(titles(&q), ["a", "d", "b", "c"]);
+        assert_eq!(q.entries()[1].item.title.as_deref(), Some("d"));
+        // With shuffle only the play order changes; the list stays as it was.
+        let mut q = queue(&["a", "b", "c", "d", "e"]);
+        q.set_shuffle(true, None);
+        let before: Vec<String> = q.entries().iter().map(|e| e.item.title.clone().unwrap()).collect();
+        let mut expected = titles(&q);
+        let moved = expected.remove(4);
+        expected.insert(1, moved);
+        assert!(q.move_in_play_order(4, 1));
+        assert_eq!(titles(&q), expected);
+        assert_eq!(q.entries().iter().map(|e| e.item.title.clone().unwrap()).collect::<Vec<_>>(), before);
+        assert!(!q.move_in_play_order(9, 0), "out of range");
+    }
+
     // ---- ShuffleOrderBuilderTest
 
     #[test]
@@ -825,6 +918,38 @@ mod tests {
         let b = q.key_at(2).unwrap();
         q.on_transition(b, a.unwrap());
         assert_eq!(titles(&q), ["A", "X", "B"]);
+    }
+
+    #[test]
+    fn the_next_pass_shown_ahead_is_the_one_that_plays() {
+        let mut q = queue(&["A", "B", "C", "D", "E", "F"]);
+        q.repeat = Repeat::All;
+        assert_eq!(q.next_pass_order(), None, "without shuffle the next pass is the list");
+        q.set_shuffle(true, q.key_at(0));
+        let shown: Vec<String> = q.next_pass_order().unwrap().iter().map(|&i| q.entries()[i].item.title.clone().unwrap()).collect();
+        assert_eq!(shown, q.next_pass_order().unwrap().iter().map(|&i| q.entries()[i].item.title.clone().unwrap()).collect::<Vec<_>>(), "kept");
+        assert_eq!(shown[0], titles(&q)[0], "it opens with the entry this pass opened with");
+        // Play to the end of the pass and start over: the new order is the one shown.
+        let order = q.order().to_vec();
+        let (last, first) = (q.entries()[*order.last().unwrap()].key, q.entries()[order[0]].key);
+        q.on_transition(last, first);
+        assert_eq!(titles(&q), shown);
+    }
+
+    #[test]
+    fn taking_an_entry_out_keeps_the_next_pass_shown() {
+        let mut q = queue(&["A", "B", "C", "D", "E", "F"]);
+        q.repeat = Repeat::All;
+        q.set_shuffle(true, q.key_at(0));
+        let title = |q: &Queue, i: usize| q.entries()[i].item.title.clone().unwrap();
+        let before: Vec<String> = q.next_pass_order().unwrap().iter().map(|&i| title(&q, i)).collect();
+        // Take out one that isn't the pass's first.
+        let gone = before[2].clone();
+        let at = q.entries().iter().position(|e| e.item.title.as_deref() == Some(gone.as_str())).unwrap();
+        q.remove(at);
+        let after: Vec<String> = q.next_pass_order().unwrap().iter().map(|&i| title(&q, i)).collect();
+        let expected: Vec<String> = before.into_iter().filter(|t| *t != gone).collect();
+        assert_eq!(after, expected);
     }
 
     #[test]

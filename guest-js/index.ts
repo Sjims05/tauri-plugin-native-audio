@@ -120,6 +120,12 @@ export type NativeAudioQueue = {
   playOrder: number[];
   /** The playable folder (playlist, album) the queue was started from (setQueue's `sourceId`, or picked in Android Auto). */
   sourceId?: string | null;
+  /**
+   * With shuffle and repeat all: the order the next pass will play in (queue indices; tracks added with addToQueue
+   * that won't stay left out), worked out ahead so an "up next" list can show it; starting over plays exactly this.
+   * Null otherwise (without shuffle the next pass is the list order).
+   */
+  nextPassOrder?: number[] | null;
 };
 
 export type NativeAudioOptions = {
@@ -444,6 +450,14 @@ export const removeFromQueue = async (index: number): Promise<NativeAudioState> 
  */
 export const moveInQueue = async (from: number, to: number): Promise<NativeAudioState> =>
   await call('move_in_queue', { from, to });
+
+/**
+ * Moves what plays at place `from` of the play order (`getQueue().playOrder`) to place `to`: what an "up next" list
+ * shows. Without shuffle the play order is the list, so this is moveInQueue; with shuffle on the play order changes
+ * and the list stays.
+ */
+export const moveInPlayOrder = async (from: number, to: number): Promise<NativeAudioState> =>
+  await call('move_in_play_order', { from, to });
 
 export const getQueue = async (): Promise<NativeAudioQueue> => await call('get_queue');
 

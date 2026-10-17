@@ -13,6 +13,7 @@ permissions = [
   "allow-update-queue",
   "allow-remove-from-queue",
   "allow-move-in-queue",
+  "allow-move-in-play-order",
   "allow-set-volume",
   "allow-get-output-devices",
   "allow-set-output-device",

@@ -282,14 +282,28 @@ impl DesktopAudio {
         Ok(self.settled())
     }
 
+    /// Moves within the play order (places in it, not list indices): what an "up next" list shows.
+    pub fn move_in_play_order(&self, from: usize, to: usize) -> Result<Value> {
+        self.with_engine(|engine, queue| {
+            if !queue.move_in_play_order(from, to) {
+                return Err(format!("can't move place {from} of the play order to {to}"));
+            }
+            resync(engine, queue);
+            Ok(())
+        })??;
+        Ok(self.settled())
+    }
+
     pub fn queue(&self) -> Value {
         let state = self.state();
-        let queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock().unwrap();
+        let next_pass = queue.next_pass_order();
         let items: Vec<&Item> = queue.entries().iter().map(|entry| &entry.item).collect();
         json!({
             "items": items,
             "currentIndex": state["queueIndex"],
             "playOrder": queue.order(),
+            "nextPassOrder": next_pass,
             "sourceId": queue.source_id,
         })
     }

@@ -16,6 +16,7 @@ Default permissions for the plugin
 - `allow-update-queue`
 - `allow-remove-from-queue`
 - `allow-move-in-queue`
+- `allow-move-in-play-order`
 - `allow-set-volume`
 - `allow-get-output-devices`
 - `allow-set-output-device`
@@ -497,6 +498,32 @@ Enables the initialize command without any pre-configured scope.
 <td>
 
 Denies the initialize command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:allow-move-in-play-order`
+
+</td>
+<td>
+
+Enables the move_in_play_order command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`native-audio:deny-move-in-play-order`
+
+</td>
+<td>
+
+Denies the move_in_play_order command without any pre-configured scope.
 
 </td>
 </tr>

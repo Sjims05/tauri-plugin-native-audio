@@ -67,7 +67,11 @@ const { items, currentIndex, playOrder } = await getQueue();
   order with it, so an "up next" list can follow it.
 - With shuffle on, added tracks get the matching spot in the shuffled order (next, or at the end of the pass) and
   the rest of the order stays. `moveInQueue` then only changes list positions; without shuffle it changes what
-  plays next.
+  plays next. To move within what plays next (an "up next" list, with or without shuffle), use `moveInPlayOrder`
+  with places in `playOrder`.
+- With shuffle and repeat all, `getQueue().nextPassOrder` is the order the next pass will play in (it's reshuffled
+  each time the queue starts over), worked out ahead so an "up next" list can show what comes after the queue;
+  starting over plays exactly that order.
 - `addToQueue` on an empty queue makes it the queue. Tracks added to a queue are marked as added: see
   `repeatAddedTracks` in [Options](options.md).
 

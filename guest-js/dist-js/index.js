@@ -77,6 +77,12 @@ export const removeFromQueue = async (index) => await call('remove_from_queue', 
  * shuffle on, the play order is kept (only the list position changes).
  */
 export const moveInQueue = async (from, to) => await call('move_in_queue', { from, to });
+/**
+ * Moves what plays at place `from` of the play order (`getQueue().playOrder`) to place `to`: what an "up next" list
+ * shows. Without shuffle the play order is the list, so this is moveInQueue; with shuffle on the play order changes
+ * and the list stays.
+ */
+export const moveInPlayOrder = async (from, to) => await call('move_in_play_order', { from, to });
 export const getQueue = async () => await call('get_queue');
 /**
  * Loads the last queue (tracks, current track and position, shuffle order, repeat mode), paused.

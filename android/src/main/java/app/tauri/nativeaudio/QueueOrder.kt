@@ -31,4 +31,17 @@ internal object QueueOrder {
         from > to && index in to until from -> index + 1
         else -> index
     }
+
+    /**
+     * The list was [before] (its items' ids) and is [after]: when [after] is [before] with only some entries taken
+     * out, each old index that's still there mapped to its new one; null when anything else changed.
+     */
+    fun afterRemovals(before: List<String>, after: List<String>): Map<Int, Int>? {
+        val map = HashMap<Int, Int>()
+        var next = 0
+        for ((old, id) in before.withIndex()) {
+            if (next < after.size && after[next] == id) map[old] = next++
+        }
+        return if (next == after.size) map else null
+    }
 }

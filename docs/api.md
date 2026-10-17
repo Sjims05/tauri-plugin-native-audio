@@ -37,7 +37,8 @@ desktop-only (D); on the other platform those are accepted and do nothing (or re
 | `updateQueue(items, options?: NativeAudioUpdateQueueOptions): Promise<NativeAudioUpdateQueueResult>` | A changed playlist, see [the guide](playback.md#updating-the-queue-from-a-changed-playlist) |
 | `removeFromQueue(index: number)` | |
 | `moveInQueue(from: number, to: number)` | |
-| `getQueue(): Promise<NativeAudioQueue>` | Items, current index and play order |
+| `moveInPlayOrder(from: number, to: number)` | Places in the play order (an "up next" list); with shuffle the list stays |
+| `getQueue(): Promise<NativeAudioQueue>` | Items, current index, play order, and the next pass's order (shuffle + repeat all) |
 | `restoreLastQueue(): Promise<NativeAudioState \| null>` | |
 
 **Playback**
@@ -132,6 +133,8 @@ type NativeAudioQueue = {
   items: NativeAudioQueueItem[]; // list order
   currentIndex: number;          // -1 when empty
   playOrder: number[];           // queue indices in the order they play
+  sourceId?: string | null;      // the playable folder it was started from
+  nextPassOrder?: number[] | null; // shuffle + repeat all: the next pass's order, worked out ahead
 };
 
 type NativeAudioUpdateQueueOptions = {
