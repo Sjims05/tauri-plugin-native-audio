@@ -505,7 +505,9 @@ impl Queue {
     }
 
     /// Adds after the current entry (`play_next`, in the list and in play order) or at the end.
-    /// Adding to an empty queue makes it the queue (not marked as added). Returns the first new key.
+    /// Adding to an empty queue makes it the queue (not marked as added), and so does adding to a queue
+    /// that doesn't play a list (no `source_id`: songs put together one by one), so repeat all repeats
+    /// them. Returns the first new key.
     pub fn add(&mut self, items: Vec<Item>, play_next: bool, current: Option<u64>) -> Option<u64> {
         if items.is_empty() {
             return None;
@@ -514,7 +516,7 @@ impl Queue {
             return self.set(items, 0);
         }
         let count = items.len();
-        let new = self.new_entries(items, true);
+        let new = self.new_entries(items, self.source_id.is_some());
         let first_key = new[0].key;
         let current_index = current.and_then(|k| self.index_of(k));
         let at = match (play_next, current_index) {
@@ -740,9 +742,11 @@ mod tests {
         Item { id: Some(id), ..item(name, name) }
     }
 
+    /// A queue playing a list (an album, a playlist): songs added to it are marked as added.
     fn queue(names: &[&str]) -> Queue {
         let mut q = Queue::new(Rng::new(42));
         q.set(names.iter().map(|n| item(n, n)).collect(), 0);
+        q.source_id = Some("list".into());
         q
     }
 
@@ -900,6 +904,20 @@ mod tests {
     }
 
     #[test]
+    fn songs_added_to_a_queue_without_a_list_are_the_queue_and_repeat() {
+        // One song played on its own, then others added: all of them are the queue.
+        let mut q = Queue::new(Rng::new(42));
+        q.set(vec![item("A", "a")], 0);
+        let a = q.key_at(0);
+        q.add(vec![item("X", "x"), item("Y", "y")], false, a);
+        assert!(q.entries().iter().all(|e| !e.added));
+        q.repeat = Repeat::All;
+        let y = q.key_at(2).unwrap();
+        q.on_transition(y, a.unwrap());
+        assert_eq!(titles(&q), ["A", "X", "Y"], "repeat all keeps them (repeat_added is off)");
+    }
+
+    #[test]
     fn wrapping_drops_added_entries_unless_repeat_added() {
         let mut q = queue(&["A", "B"]);
         q.repeat = Repeat::All;
@@ -1044,6 +1062,7 @@ mod tests {
     fn update_keeps_added_entries_after_the_entry_they_followed() {
         let mut q = Queue::new(Rng::new(3));
         q.set(["A", "B", "C"].iter().enumerate().map(|(i, n)| with_id(n, i as i64)).collect(), 0);
+        q.source_id = Some("pl".into());
         q.add(vec![with_id("X", 9)], true, q.key_at(0)); // A X B C
         q.update(vec![with_id("C", 2), with_id("A", 0), with_id("B", 1)], q.key_at(0), UpdateOptions::default());
         assert_eq!(titles(&q), ["C", "A", "X", "B"]);

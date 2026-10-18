@@ -72,8 +72,9 @@ const { items, currentIndex, playOrder } = await getQueue();
 - With shuffle and repeat all, `getQueue().nextPassOrder` is the order the next pass will play in (it's reshuffled
   each time the queue starts over), worked out ahead so an "up next" list can show what comes after the queue;
   starting over plays exactly that order.
-- `addToQueue` on an empty queue makes it the queue. Tracks added to a queue are marked as added: see
-  `repeatAddedTracks` in [Options](options.md).
+- `addToQueue` on an empty queue makes it the queue, and so does adding to a queue without a `sourceId` (tracks
+  put together one by one: repeat all repeats them all). Tracks added to a queue with a `sourceId` (a playlist, an
+  album) are marked as added: see `repeatAddedTracks` in [Options](options.md).
 
 ## Updating the queue from a changed playlist
 

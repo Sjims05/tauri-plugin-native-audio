@@ -423,7 +423,8 @@ export const setQueue = async (payload: NativeAudioSetQueuePayload): Promise<Nat
 /**
  * Adds items to the playing queue: at the end, or right after the current track with `playNext`.
  * With shuffle on they get the same spot in the play order, and the rest of the order is kept.
- * With an empty queue, it becomes the queue.
+ * With an empty queue, it becomes the queue; added to a queue without a `sourceId` they're part of it (not marked as
+ * added, so repeat all repeats them).
  */
 export const addToQueue = async (items: NativeAudioQueueItem[], options: { playNext?: boolean } = {}): Promise<NativeAudioState> =>
   await call('add_to_queue', { items, playNext: options.playNext ?? false });

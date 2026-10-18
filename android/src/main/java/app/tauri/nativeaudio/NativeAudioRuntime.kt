@@ -539,9 +539,11 @@ object NativeAudioRuntime {
             val exoPlayer = player ?: return
             val count = exoPlayer.mediaItemCount
             // Marked so they can be dropped when the queue repeats (repeatAddedTracks = false).
-            // Adding to an empty queue just makes it the queue.
+            // Adding to an empty queue just makes it the queue, and so does adding to a queue that
+            // doesn't play a list (no source: songs put together one by one), so repeat all repeats them.
+            val added = count > 0 && queueSourceId != null
             val mediaItems = items.map {
-                buildMediaItem(it.src!!.trim(), it.id, it.title, it.artist, it.artworkUrl, addedToQueue = count > 0)
+                buildMediaItem(it.src!!.trim(), it.id, it.title, it.artist, it.artworkUrl, addedToQueue = added)
             }
             if (count == 0) {
                 lastMediaItemIndex = 0

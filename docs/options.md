@@ -58,7 +58,8 @@ Android Auto, desktop media keys). With `nextAtEnd: "first"` the next button sta
 ### repeatAddedTracks
 
 Whether tracks added with `addToQueue` stay in the queue when it repeats (repeat `all`). By default they play once
-and are dropped when the queue starts over.
+and are dropped when the queue starts over. This is about queues playing a list (set with a `sourceId`): tracks
+added to a queue without one are part of it, and always repeat.
 
 ### volumeCurve
 
