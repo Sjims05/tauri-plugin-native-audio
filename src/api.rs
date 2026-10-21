@@ -324,6 +324,51 @@ impl<R: Runtime> NativeAudio<R> {
         }
     }
 
+    /// Plays (what's loaded, from where it is).
+    pub fn play(&self) -> Result<()> {
+        #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+        return self.desktop_audio().play().map(|_| ());
+        #[allow(unreachable_code)]
+        self.mobile_control("play")
+    }
+
+    pub fn pause(&self) -> Result<()> {
+        #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+        return self.desktop_audio().pause().map(|_| ());
+        #[allow(unreachable_code)]
+        self.mobile_control("pause")
+    }
+
+    /// The next track (as the next button does: `nextAtEnd` at the end of the queue).
+    pub fn next(&self) -> Result<()> {
+        #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+        return self.desktop_audio().next().map(|_| ());
+        #[allow(unreachable_code)]
+        self.mobile_control("next")
+    }
+
+    /// The previous track, or back to the start of this one (`previousRestartsAfterSeconds`).
+    pub fn previous(&self) -> Result<()> {
+        #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+        return self.desktop_audio().previous().map(|_| ());
+        #[allow(unreachable_code)]
+        self.mobile_control("previous")
+    }
+
+    #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+    fn desktop_audio(&self) -> tauri::State<'_, crate::desktop::player::DesktopAudio> {
+        self.app.state::<crate::desktop::player::DesktopAudio>()
+    }
+
+    /// A control without arguments on Android (`command`); elsewhere not there.
+    #[allow(dead_code, unused_variables)]
+    fn mobile_control(&self, command: &str) -> Result<()> {
+        #[cfg(all(feature = "mobile", target_os = "android"))]
+        return self.handle.run_mobile_plugin::<serde_json::Value>(command, ()).map(|_| ()).map_err(|e| e.to_string());
+        #[allow(unreachable_code)]
+        Err("not supported on this platform".into())
+    }
+
     pub fn set_shuffle(&self, enabled: bool) -> Result<()> {
         #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
         {
