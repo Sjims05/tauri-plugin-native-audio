@@ -86,6 +86,8 @@ pub struct PlayerState {
     pub shuffle: bool,
     /// "off", "all" or "one".
     pub repeat_mode: String,
+    /// 0 to 1 (as set, before the volume curve).
+    pub volume: f64,
 }
 
 /// What `updateQueue` changed.
@@ -353,6 +355,42 @@ impl<R: Runtime> NativeAudio<R> {
         return self.desktop_audio().previous().map(|_| ());
         #[allow(unreachable_code)]
         self.mobile_control("previous")
+    }
+
+    /// Jumps to `position` seconds in the track.
+    pub fn seek_to(&self, position: f64) -> Result<()> {
+        #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+        return self.desktop_audio().seek_to(position).map(|_| ());
+        #[allow(unreachable_code)]
+        self.mobile_call("seekTo", serde_json::json!({ "position": position }))
+    }
+
+    /// The volume, 0 to 1 (through the volume curve, as the app's slider).
+    pub fn set_volume(&self, volume: f64) -> Result<()> {
+        #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+        {
+            self.desktop_audio().set_volume(volume);
+            return Ok(());
+        }
+        #[allow(unreachable_code)]
+        self.mobile_call("setVolume", serde_json::json!({ "volume": volume }))
+    }
+
+    /// Plays the queue's track at `index` (its place in the queue's own order).
+    pub fn skip_to(&self, index: usize) -> Result<()> {
+        #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+        return self.desktop_audio().skip_to(index).map(|_| ());
+        #[allow(unreachable_code)]
+        self.mobile_call("skipTo", serde_json::json!({ "index": index }))
+    }
+
+    /// A command with arguments on Android; elsewhere not there.
+    #[allow(dead_code, unused_variables)]
+    fn mobile_call(&self, command: &str, payload: serde_json::Value) -> Result<()> {
+        #[cfg(all(feature = "mobile", target_os = "android"))]
+        return self.handle.run_mobile_plugin::<serde_json::Value>(command, payload).map(|_| ()).map_err(|e| e.to_string());
+        #[allow(unreachable_code)]
+        Err("not supported on this platform".into())
     }
 
     #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
