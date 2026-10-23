@@ -9,6 +9,8 @@ internal const val EVENT_STATE = "native_audio_state"
 internal const val EVENT_CONTROL = "native_audio_control"
 internal const val EVENT_PLAYBACK = "native_audio_playback_event"
 internal const val EVENT_TRACKED_LIST = "native_audio_tracked_list"
+/** A control for the other device the app controls (setRemotePlayback): play, pause, next, previous, seek, volume. */
+internal const val EVENT_REMOTE_COMMAND = "native_audio_remote_command"
 internal const val ADDED_TO_QUEUE_EXTRA = "app.tauri.nativeaudio.ADDED_TO_QUEUE"
 internal const val ARTWORK_URL_EXTRA = "app.tauri.nativeaudio.ARTWORK_URL"
 internal const val CAR_APP_META_DATA = "com.google.android.gms.car.application"

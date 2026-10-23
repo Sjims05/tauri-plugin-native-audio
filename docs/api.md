@@ -222,6 +222,46 @@ e.g. a tray menu).
 For Android Auto, `app.native_audio().set_library(&library)` sends the browsable library (`Library`,
 `LibraryFolder`, `LibraryItem`, `LibraryChild`), like `setLibrary`; elsewhere it's accepted and not used.
 
+### Controlling another device
+
+An app that plays on another device itself (its own connection to it, e.g. one phone controlling a computer) can
+let the phone's media controls control that device instead:
+
+```rust
+use tauri_plugin_native_audio::{NativeAudioExt, RemoteCommand, RemotePlayback};
+
+// Once: the controls' presses (play, pause, next, previous, seek, volume), for the app to send to that device.
+app.native_audio().on_remote_command(|command| match command {
+    RemoteCommand::Volume { step, max_volume } => { /* that device's volume to step / max_volume */ }
+    other => { /* send it there */ }
+})?;
+// Whenever that device's state changes:
+app.native_audio().set_remote_playback(Some(RemotePlayback {
+    device: "Living room PC".into(),
+    title: Some("Song".into()),
+    artist: Some("Artist".into()),
+    artwork_url: None,
+    playing: true,
+    position: 42.0,
+    duration: 180.0,
+    has_next: true,
+    volume: 8,       // its volume, in steps
+    max_volume: 20,  // each press of a volume button is one step
+    shuffle: false,
+    repeat: "off".into(),
+    item_id: Some(12), // the song's id here, if it's here too: the custom buttons (like) are for it
+}))?;
+// Back to this device:
+app.native_audio().set_remote_playback(None)?;
+```
+
+Android: meanwhile the media session, the notification ("Playing on …") and the lock screen show that device's song,
+their buttons send `RemoteCommand`s (the `setControls` shuffle and repeat buttons too: they show that device's), and
+this device's player is paused. The session is a remote one, so the volume
+buttons move that device's volume (in `max_volume` steps) and leave this device's own volume alone; Android only
+hands them to a session that's playing, so while that device is paused they change this device's volume. Elsewhere
+both calls do nothing.
+
 `QueueItem`, `UpdateQueueOptions`, `Library` and the results are the JavaScript API's shapes. Desktop: the Rust player
 itself. Android: the plugin's native code; call from a background thread (it waits for the answer). iOS: not
 supported yet.

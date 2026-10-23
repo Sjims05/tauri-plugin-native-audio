@@ -54,6 +54,8 @@ class NativeAudioService : MediaLibraryService() {
         // carSupport: for other apps it makes Android Auto hide their now-playing card.
         if (NativeAudioRuntime.carSupportEnabled(this)) NativeAudioRuntime.mediaSession()?.let { addSession(it) }
         setupNotificationManager()
+        // Controlling another device (setRemotePlayback): the notification shows that device's player, and back.
+        NativeAudioRuntime.onNotificationPlayerChanged = { notificationManager?.setPlayer(it) }
         NativeAudioRuntime.onKeepAliveRulesChanged = { applyPausedRules() }
         NativeAudioRuntime.startWatchingCarConnection(this)
         // Started with nothing loaded (e.g. Android Auto connecting while the app was closed):
@@ -139,6 +141,7 @@ class NativeAudioService : MediaLibraryService() {
         NativeAudioRuntime.mediaSession()?.let { if (it in sessions) removeSession(it) }
         NativeAudioRuntime.stopWatchingCarConnection()
         NativeAudioRuntime.onKeepAliveRulesChanged = null
+        NativeAudioRuntime.onNotificationPlayerChanged = null
         handler.removeCallbacks(leaveForeground)
         notificationManager?.setPlayer(null)
         notificationManager = null
@@ -167,6 +170,11 @@ class NativeAudioService : MediaLibraryService() {
 
                     override fun getCurrentContentText(player: androidx.media3.common.Player): CharSequence? {
                         return player.mediaMetadata.artist
+                    }
+
+                    // Controlling another device: "Playing on …".
+                    override fun getCurrentSubText(player: androidx.media3.common.Player): CharSequence? {
+                        return if (player is RemotePlaybackPlayer) player.mediaMetadata.subtitle else null
                     }
 
                     override fun getCurrentLargeIcon(

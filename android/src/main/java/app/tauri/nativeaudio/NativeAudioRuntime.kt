@@ -78,6 +78,10 @@ object NativeAudioRuntime {
     private var appContext: Context? = null
     private var mediaSession: MediaLibrarySession? = null
     private var sessionPlayer: SkipIntervalPlayer? = null
+    /** While the app controls another device (setRemotePlayback): the session's and notification's player. */
+    private var remotePlayer: RemotePlaybackPlayer? = null
+    /** The service's notification follows the player it should show (this device's, or the other device's). */
+    internal var onNotificationPlayerChanged: ((Player) -> Unit)? = null
     // Kept across dispose() so they only have to be set once.
     @Volatile
     private var skipIntervalMs = 0L
@@ -811,7 +815,8 @@ object NativeAudioRuntime {
             if (queue == null || queue.items.isEmpty()) return@askLater
             val unchanged = synchronized(lock) {
                 val p = player
-                p != null && !p.isPlaying && listOf(p.mediaItemCount, p.currentMediaItemIndex, p.currentMediaItem?.mediaId) == before
+                // Not playing, and play not pressed either (a song starting isn't "playing" until it has loaded).
+                p != null && !p.isPlaying && !p.playWhenReady && listOf(p.mediaItemCount, p.currentMediaItemIndex, p.currentMediaItem?.mediaId) == before
             }
             if (unchanged) applyProvidedQueue(context, queue)
         }
@@ -1007,6 +1012,8 @@ object NativeAudioRuntime {
     /** A press of a setControls button, from Android Auto or the media controls. */
     fun onControlCommand(context: Context, action: String): Boolean {
         val button = PlaybackControls.find(context, action) ?: return false
+        val remote = synchronized(lock) { remotePlayer?.let { it to it.info } }
+        if (remote != null) return onRemoteControl(context, button, remote.first, remote.second ?: return true)
         when (button) {
             is PlaybackControls.Button.SeekBack -> seekByInterval(-(button.seconds * 1000.0).toLong())
             is PlaybackControls.Button.SeekForward -> seekByInterval((button.seconds * 1000.0).toLong())
@@ -1049,6 +1056,37 @@ object NativeAudioRuntime {
                 refreshControls()
             }
         }
+        return true
+    }
+
+    /**
+     * A setControls button while the app controls another device: shuffle and repeat change them there; a custom
+     * button (like) is for its song (when it's here too). The rest (seeking by an interval, speed, the sleep timer)
+     * are this device's player's: not for the other device.
+     */
+    private fun onRemoteControl(context: Context, button: PlaybackControls.Button, player: RemotePlaybackPlayer, info: RemoteInfo): Boolean {
+        when (button) {
+            PlaybackControls.Button.Shuffle -> {
+                player.command(JSONObject().put("cmd", "shuffle").put("on", !info.shuffle))
+                player.update(info.copy(shuffle = !info.shuffle))
+            }
+            PlaybackControls.Button.Repeat -> {
+                val next = when (info.repeatMode) {
+                    Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                    Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                    else -> Player.REPEAT_MODE_OFF
+                }
+                player.command(JSONObject().put("cmd", "repeat").put("mode", repeatModeName(next)))
+                player.update(info.copy(repeatMode = next))
+            }
+            is PlaybackControls.Button.Custom -> {
+                val press = PlaybackControls.recordPress(context, button, info.itemId) ?: return true
+                NativeAudioPlugin.emitControlPressToActive(press)
+                QueueProviders.controlPressed(context, press)
+            }
+            else -> return true
+        }
+        refreshControls()
         return true
     }
 
@@ -1143,7 +1181,54 @@ object NativeAudioRuntime {
     /** The player the notification (PlayerNotificationManager) shows controls for. */
     fun notificationPlayer(): Player? {
         synchronized(lock) {
-            return sessionPlayer ?: player
+            return remotePlayer ?: sessionPlayer ?: player
+        }
+    }
+
+    /**
+     * The app controls another device (`info`), or not anymore (null). While it does, the media session and the
+     * notification show what plays there and send their controls there (as `remoteCommand` events: [send]), the
+     * volume buttons move that device's volume, and this device's player is paused. Back to null, they're this
+     * device's player's again (still paused).
+     */
+    internal fun setRemotePlayback(context: Context, info: RemoteInfo?, send: (JSONObject) -> Unit) {
+        ensure(context)
+        val (session, local) = synchronized(lock) { (mediaSession ?: return) to (sessionPlayer ?: player ?: return) }
+        Handler(local.applicationLooper).post {
+            var done: RemotePlaybackPlayer? = null
+            val shown = synchronized(lock) {
+                val current = remotePlayer
+                when {
+                    info != null && current != null -> {
+                        val before = current.info
+                        current.update(info)
+                        if (before?.shuffle != info.shuffle || before.repeatMode != info.repeatMode || before.itemId != info.itemId) refreshControls()
+                        null
+                    }
+                    info != null -> {
+                        player?.pause()
+                        RemotePlaybackPlayer(local.applicationLooper, send).also {
+                            it.update(info)
+                            remotePlayer = it
+                        }
+                    }
+                    current != null -> {
+                        remotePlayer = null
+                        done = current
+                        local
+                    }
+                    else -> null
+                }
+            } ?: return@post
+            session.player = shown
+            onNotificationPlayerChanged?.invoke(shown)
+            // Released once nothing uses it.
+            done?.release()
+            // The setControls buttons show the player's shuffle, repeat and song (this device's, or the other's).
+            refreshControls()
+            if (shown is RemotePlaybackPlayer) startService(context)
+            syncTicking()
+            emitState()
         }
     }
 
@@ -1502,6 +1587,19 @@ object NativeAudioRuntime {
     internal fun isAddedToQueue(item: MediaItem): Boolean =
         item.mediaMetadata.extras?.getBoolean(ADDED_TO_QUEUE_EXTRA, false) == true
 
+    /** What the setControls buttons show: the other device's while the app controls one, else this player's. */
+    private fun controlsViewLocked(exoPlayer: Player): PlaybackControls.PlayerView {
+        val remote = remotePlayer?.info ?: return playerViewLocked(exoPlayer)
+        return PlaybackControls.PlayerView(
+            shuffle = remote.shuffle,
+            repeatMode = remote.repeatMode,
+            speed = 1.0,
+            itemId = remote.itemId,
+            sleepTimerMinutes = null,
+            sleepTimerEndOfTrack = false,
+        )
+    }
+
     private fun playerViewLocked(exoPlayer: Player) = PlaybackControls.PlayerView(
         shuffle = exoPlayer.shuffleModeEnabled,
         repeatMode = exoPlayer.repeatMode,
@@ -1522,7 +1620,7 @@ object NativeAudioRuntime {
             val context = appContext ?: return
             val exoPlayer = player ?: return
             val session = mediaSession ?: return
-            session to PlaybackControls.layout(context, playerViewLocked(exoPlayer))
+            session to PlaybackControls.layout(context, controlsViewLocked(exoPlayer))
         }
         val commands = if (updateCommands) PlaybackControls.sessionCommands(session, appContext ?: return) else null
         tickHandler.post {

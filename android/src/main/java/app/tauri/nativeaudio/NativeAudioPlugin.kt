@@ -431,6 +431,47 @@ class NativeAudioPlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
+    /**
+     * The app controls another device: what plays there (`device`, `title`, `artist`, `artworkUrl`, `playing`,
+     * `position` and `duration` in seconds, `hasNext`, `volume` of `maxVolume` steps, `shuffle`, `repeat`, and
+     * `itemId`: the song's id here, for the custom buttons), or nothing (no `device`: back to this device). The session, the notification and the volume buttons send their controls as
+     * native_audio_remote_command events.
+     */
+    @Command
+    fun setRemotePlayback(invoke: Invoke) {
+        runCatching {
+            val args = invoke.getArgs()
+            val context = activity.applicationContext
+            val info = args.getString("device", null)?.takeIf { it.isNotBlank() }?.let { device ->
+                val artworkUrl = args.getString("artworkUrl", null)?.takeIf { it.isNotBlank() }
+                RemoteInfo(
+                    device = device,
+                    title = args.getString("title", null),
+                    artist = args.getString("artist", null),
+                    artworkUri = artworkUrl?.let { ArtworkRegistry.artworkUri(context, it, audioSrc = null, embedded = false) },
+                    playing = args.getBoolean("playing", false) == true,
+                    positionMs = (args.optDouble("position", 0.0) * 1000).toLong(),
+                    durationMs = (args.optDouble("duration", 0.0) * 1000).toLong(),
+                    hasNext = args.getBoolean("hasNext", false) == true,
+                    volume = args.getInteger("volume", 0) ?: 0,
+                    maxVolume = (args.getInteger("maxVolume", 20) ?: 20).coerceAtLeast(1),
+                    shuffle = args.getBoolean("shuffle", false) == true,
+                    repeatMode = when (args.getString("repeat", "off")) {
+                        "all" -> Player.REPEAT_MODE_ALL
+                        "one" -> Player.REPEAT_MODE_ONE
+                        else -> Player.REPEAT_MODE_OFF
+                    },
+                    itemId = if (args.has("itemId") && !args.isNull("itemId")) args.getLong("itemId") else null,
+                )
+            }
+            NativeAudioRuntime.setRemotePlayback(context, info) { command -> emitRemoteCommandToActive(command) }
+        }.onSuccess {
+            invoke.resolve()
+        }.onFailure {
+            invoke.reject(it.message ?: "setRemotePlayback failed")
+        }
+    }
+
     @Command
     fun setControls(invoke: Invoke) {
         runCatching {
@@ -769,6 +810,13 @@ class NativeAudioPlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
+    private fun emitRemoteCommand(command: JSONObject) {
+        val payload = JSObject(command.toString())
+        activity.runOnUiThread {
+            trigger(EVENT_REMOTE_COMMAND, payload)
+        }
+    }
+
     private fun emitTrackedListChange(change: JSONObject) {
         val payload = JSObject(change.toString())
         activity.runOnUiThread {
@@ -849,6 +897,10 @@ class NativeAudioPlugin(private val activity: Activity) : Plugin(activity) {
 
         internal fun emitTrackedListChangeToActive(change: JSONObject) {
             activeInstance?.emitTrackedListChange(change)
+        }
+
+        internal fun emitRemoteCommandToActive(command: JSONObject) {
+            activeInstance?.emitRemoteCommand(command)
         }
     }
 }

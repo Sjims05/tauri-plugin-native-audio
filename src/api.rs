@@ -16,6 +16,53 @@
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, Runtime};
 
+/// What plays on another device the app controls (its own connection to it), for the phone's media session,
+/// notification and volume buttons to show and control instead of this device's player: [`NativeAudio::set_remote_playback`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemotePlayback {
+    /// The other device's name ("Playing on …").
+    pub device: String,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    /// A picture of the song (a local file, or a URL), as a queue item's.
+    pub artwork_url: Option<String>,
+    pub playing: bool,
+    /// Seconds into the song, now (it counts on while playing).
+    pub position: f64,
+    pub duration: f64,
+    /// Whether there's a song after this one.
+    pub has_next: bool,
+    /// The other device's volume in steps, 0 to `max_volume` (each press of a volume button is one step).
+    pub volume: u32,
+    pub max_volume: u32,
+    /// Its shuffle and repeat ("off", "all", "one"): the `setControls` shuffle and repeat buttons show and change them.
+    pub shuffle: bool,
+    pub repeat: String,
+    /// The song's id in this app, when it has it too: the `setControls` custom buttons (like) are for it.
+    pub item_id: Option<i64>,
+}
+
+/// A control for the other device, from the phone's media session, notification or volume buttons
+/// ([`NativeAudio::on_remote_command`]).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "cmd", rename_all = "camelCase")]
+pub enum RemoteCommand {
+    Play,
+    Pause,
+    Next,
+    Previous,
+    /// To this many seconds into the song.
+    Seek { position: f64 },
+    /// The volume to `step` of `max_volume`.
+    #[serde(rename_all = "camelCase")]
+    Volume { step: u32, max_volume: u32 },
+    /// The `setControls` shuffle button.
+    Shuffle { on: bool },
+    /// The `setControls` repeat button: "off", "all" or "one".
+    Repeat { mode: String },
+}
+
 /// A queue item, as in the JavaScript API.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -374,6 +421,49 @@ impl<R: Runtime> NativeAudio<R> {
         }
         #[allow(unreachable_code)]
         self.mobile_call("setVolume", serde_json::json!({ "volume": volume }))
+    }
+
+    /// The app controls another device (`Some`: what plays there, updated as it changes), or not anymore (`None`).
+    /// Android: meanwhile the media session, the notification and the volume buttons show and control that device
+    /// (their controls come to [`Self::on_remote_command`]), and this device's player is paused. Elsewhere: nothing.
+    #[allow(unused_variables)]
+    pub fn set_remote_playback(&self, playback: Option<RemotePlayback>) -> Result<()> {
+        #[cfg(all(feature = "mobile", target_os = "android"))]
+        return self.mobile_call(
+            "setRemotePlayback",
+            match playback {
+                Some(playback) => serde_json::to_value(playback).map_err(|e| e.to_string())?,
+                // No device: back to this device.
+                None => serde_json::json!({}),
+            },
+        );
+        #[allow(unreachable_code)]
+        Ok(())
+    }
+
+    /// Calls `handler` with each control for the other device ([`Self::set_remote_playback`]). Android only
+    /// (elsewhere there are none); register it once.
+    #[allow(unused_variables)]
+    pub fn on_remote_command(&self, handler: impl Fn(RemoteCommand) + Send + Sync + 'static) -> Result<()> {
+        #[cfg(all(feature = "mobile", target_os = "android"))]
+        {
+            #[derive(Serialize)]
+            struct Listen {
+                event: &'static str,
+                handler: tauri::ipc::Channel<serde_json::Value>,
+            }
+            let channel = tauri::ipc::Channel::new(move |body| {
+                if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                    if let Ok(command) = serde_json::from_str::<RemoteCommand>(&json) {
+                        handler(command);
+                    }
+                }
+                Ok(())
+            });
+            return self.mobile_call("registerListener", serde_json::to_value(Listen { event: "native_audio_remote_command", handler: channel }).map_err(|e| e.to_string())?);
+        }
+        #[allow(unreachable_code)]
+        Ok(())
     }
 
     /// Plays the queue's track at `index` (its place in the queue's own order).
