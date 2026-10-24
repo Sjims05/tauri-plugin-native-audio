@@ -215,8 +215,9 @@ if queue.source_id.as_deref() == Some("album:12") {
 ```
 
 Also `get_state()` (what's playing, where, playing or not, shuffle, repeat), `set_queue(items, start_index,
-start_position, source_id)` (loads a queue, paused), `set_shuffle(enabled)`, `set_repeat_mode(mode)`, and the
-controls `play()`, `pause()`, `next()` and `previous()` (as the buttons do: `nextAtEnd`, `previousRestartsAfterSeconds`;
+start_position, source_id)` (loads a queue, paused), the queue edits `add_to_queue(items, play_next)`,
+`remove_from_queue(index)` and `move_in_play_order(from, to)` (as `addToQueue`, `removeFromQueue`, `moveInPlayOrder`),
+`set_shuffle(enabled)`, `set_repeat_mode(mode)`, and the controls `play()`, `pause()`, `next()` and `previous()` (as the buttons do: `nextAtEnd`, `previousRestartsAfterSeconds`;
 e.g. a tray menu).
 
 For Android Auto, `app.native_audio().set_library(&library)` sends the browsable library (`Library`,
@@ -255,12 +256,14 @@ app.native_audio().set_remote_playback(Some(RemotePlayback {
 app.native_audio().set_remote_playback(None)?;
 ```
 
+Computers: meanwhile the system's media controls (the Windows media panel, MPRIS, Now Playing) and the media keys show
+that device's song and send play, pause, next, previous and seeking to it; this player is paused.
+
 Android: meanwhile the media session, the notification ("Playing on …") and the lock screen show that device's song,
 their buttons send `RemoteCommand`s (the `setControls` shuffle and repeat buttons too: they show that device's), and
 this device's player is paused. The session is a remote one, so the volume
 buttons move that device's volume (in `max_volume` steps) and leave this device's own volume alone; Android only
-hands them to a session that's playing, so while that device is paused they change this device's volume. Elsewhere
-both calls do nothing.
+hands them to a session that's playing, so while that device is paused they change this device's volume.
 
 `QueueItem`, `UpdateQueueOptions`, `Library` and the results are the JavaScript API's shapes. Desktop: the Rust player
 itself. Android: the plugin's native code; call from a background thread (it waits for the answer). iOS: not

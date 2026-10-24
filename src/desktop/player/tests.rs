@@ -331,3 +331,27 @@ fn the_volume_follows_its_curve() {
         }
     }
 }
+
+#[test]
+fn controlling_another_device_the_media_keys_are_for_it() {
+    let h = Harness::new("remote");
+    h.audio.load(vec![h.track("here", 48_000, 1, 1)], 0, 0.0, None).unwrap();
+    h.audio.play().unwrap();
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let keep = sent.clone();
+    h.audio.set_remote_commands(Arc::new(move |command| keep.lock().unwrap().push(command)));
+    let there = RemotePlayback { device: "Phone".into(), title: Some("Song".into()), playing: true, duration: 180.0, ..Default::default() };
+    h.audio.set_remote_playback(Some(there));
+    // This player paused; its media keys now go to the other device.
+    assert_eq!(h.audio.state()["isPlaying"], false);
+    h.audio.on_media_event(MediaControlEvent::Toggle);
+    h.audio.on_media_event(MediaControlEvent::Next);
+    h.audio.on_media_event(MediaControlEvent::SetPosition(souvlaki::MediaPosition(Duration::from_secs(30))));
+    assert_eq!(*sent.lock().unwrap(), vec![RemoteCommand::Pause, RemoteCommand::Next, RemoteCommand::Seek { position: 30.0 }]);
+    assert_eq!(h.audio.state()["isPlaying"], false, "this player stays paused");
+    // Back to this player: its keys are its own again.
+    h.audio.set_remote_playback(None);
+    h.audio.on_media_event(MediaControlEvent::Play);
+    assert_eq!(h.audio.state()["isPlaying"], true);
+    assert_eq!(sent.lock().unwrap().len(), 3);
+}

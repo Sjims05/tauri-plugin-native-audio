@@ -424,10 +424,16 @@ impl<R: Runtime> NativeAudio<R> {
     }
 
     /// The app controls another device (`Some`: what plays there, updated as it changes), or not anymore (`None`).
-    /// Android: meanwhile the media session, the notification and the volume buttons show and control that device
-    /// (their controls come to [`Self::on_remote_command`]), and this device's player is paused. Elsewhere: nothing.
+    /// Meanwhile this device's player is paused and its media controls show and control that device (their presses
+    /// come to [`Self::on_remote_command`]): on Android the media session, the notification, the lock screen and the
+    /// volume buttons; on a computer the system's media controls (the Windows media panel, the media keys).
     #[allow(unused_variables)]
     pub fn set_remote_playback(&self, playback: Option<RemotePlayback>) -> Result<()> {
+        #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+        {
+            self.desktop_audio().set_remote_playback(playback);
+            return Ok(());
+        }
         #[cfg(all(feature = "mobile", target_os = "android"))]
         return self.mobile_call(
             "setRemotePlayback",
@@ -441,10 +447,14 @@ impl<R: Runtime> NativeAudio<R> {
         Ok(())
     }
 
-    /// Calls `handler` with each control for the other device ([`Self::set_remote_playback`]). Android only
-    /// (elsewhere there are none); register it once.
+    /// Calls `handler` with each control for the other device ([`Self::set_remote_playback`]); register it once.
     #[allow(unused_variables)]
     pub fn on_remote_command(&self, handler: impl Fn(RemoteCommand) + Send + Sync + 'static) -> Result<()> {
+        #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+        {
+            self.desktop_audio().set_remote_commands(std::sync::Arc::new(handler));
+            return Ok(());
+        }
         #[cfg(all(feature = "mobile", target_os = "android"))]
         {
             #[derive(Serialize)]
@@ -472,6 +482,34 @@ impl<R: Runtime> NativeAudio<R> {
         return self.desktop_audio().skip_to(index).map(|_| ());
         #[allow(unreachable_code)]
         self.mobile_call("skipTo", serde_json::json!({ "index": index }))
+    }
+
+    /// Adds songs to the queue: after the playing one (`play_next`), or at the end. With nothing loaded, they become
+    /// the queue (paused).
+    pub fn add_to_queue(&self, items: Vec<QueueItem>, play_next: bool) -> Result<()> {
+        #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+        {
+            let items = serde_json::to_value(items).and_then(serde_json::from_value).map_err(|e| e.to_string())?;
+            return self.desktop_audio().add_to_queue(items, play_next).map(|_| ());
+        }
+        #[allow(unreachable_code)]
+        self.mobile_call("addToQueue", serde_json::json!({ "items": items, "playNext": play_next }))
+    }
+
+    /// Takes the queue's item at `index` (its place in the queue's own order) out of it.
+    pub fn remove_from_queue(&self, index: usize) -> Result<()> {
+        #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+        return self.desktop_audio().remove_from_queue(index).map(|_| ());
+        #[allow(unreachable_code)]
+        self.mobile_call("removeFromQueue", serde_json::json!({ "index": index }))
+    }
+
+    /// Moves an item in the order the queue plays in (shuffled or not): from place `from` to place `to` of that order.
+    pub fn move_in_play_order(&self, from: usize, to: usize) -> Result<()> {
+        #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
+        return self.desktop_audio().move_in_play_order(from, to).map(|_| ());
+        #[allow(unreachable_code)]
+        self.mobile_call("moveInPlayOrder", serde_json::json!({ "from": from, "to": to }))
     }
 
     /// A command with arguments on Android; elsewhere not there.

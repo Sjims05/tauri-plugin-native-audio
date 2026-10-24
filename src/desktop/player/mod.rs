@@ -19,6 +19,7 @@ use super::media_controls::{MediaPanel, PanelConfig, TrackInfo};
 use super::persist::{ListConfig, ListEntry, Persist, Progress, QueuePosition};
 use super::pipeline::{NextTrack, Track};
 use super::queue::{Queue, Repeat, UpdateOptions, UpdateSummary};
+use crate::api::{RemoteCommand, RemotePlayback};
 
 const STATE_EVENT: &str = "native_audio_state";
 const PLAYBACK_EVENT: &str = "native_audio_playback_event";
@@ -83,6 +84,13 @@ struct Inner {
     panel_config: Option<PanelConfig>,
     panel: Option<MediaPanel>,
     media_controls: bool,
+    /// While the app controls another device (set_remote_playback): what plays there, which the media controls show
+    /// instead of this player (their presses go to `remote_commands`).
+    remote: Option<RemotePlayback>,
+    /// The app's handler for those presses (on_remote_command).
+    remote_commands: Option<Arc<dyn Fn(RemoteCommand) + Send + Sync>>,
+    /// The media controls are this player's again: the background loop shows its track afresh.
+    panel_resync: bool,
     /// Remember how far each item played (setOptions trackProgress).
     track_progress: bool,
     /// Previous restarts the current track when it's past this; 0: previous always goes back a track.
@@ -144,6 +152,9 @@ impl DesktopAudio {
                 panel_config: panel,
                 panel: None,
                 media_controls: settings.media_controls.unwrap_or(true),
+                remote: None,
+                remote_commands: None,
+                panel_resync: false,
                 track_progress: settings.track_progress.unwrap_or(false),
                 previous_restarts_after: settings.previous_restarts_after_seconds.unwrap_or(3.0),
                 next_at_end_first: settings.next_at_end.as_deref() == Some("first"),
